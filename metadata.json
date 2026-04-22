@@ -1,0 +1,5 @@
+{
+  "name": "Nexus Spatial Share",
+  "description": "High-speed, gesture-based cross-platform file and clipboard transfer system.",
+  "requestFramePermissions": ["camera", "microphone"]
+}
