@@ -7,6 +7,7 @@ import { drawConnectors, drawLandmarks } from "@mediapipe/drawing_utils";
 import { TransferEngine, TransferTelemetry, CHUNK_SIZE, HEADER_SIZE } from './lib/TransferEngine';
 
 export default function App() {
+
   const [roomCode, setRoomCode] = useState("");
   const [joined, setJoined] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -28,10 +29,15 @@ export default function App() {
   const transferEngineRef = useRef<TransferEngine | null>(null);
   const [incomingFile, setIncomingFile] = useState<{ name: string, type: string, size: number } | null>(null);
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
-  const [receivedFiles, setReceivedFiles] = useState<{ name: string, blob: Blob, id: string }[]>([]);
-  // File System Access API: one directory handle for the entire session's batch download
+  // opfsHandle: FileSystemFileHandle kept alive until user saves — do NOT delete OPFS at completion,
+  // only after a successful download. Deleting it early invalidates the File object → "Check internet connection".
+  const [receivedFiles, setReceivedFiles] = useState<{ name: string, blob: Blob | null, opfsHandle: any | null, id: string }[]>([]);
   const saveDirectoryHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const hasSaveDirectoryRef = useRef(false);
+  const opfsFileHandleRef = useRef<any>(null);
+  // Tracks the FileSystemFileHandle for the current FSA stream (showSaveFilePicker path)
+  // so we can delete the partial file if the transfer is cancelled mid-way.
+  const streamFileHandleRef = useRef<any>(null);
 
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -49,9 +55,7 @@ export default function App() {
   const requestRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileChunksRef = useRef<ArrayBuffer[]>([]);
-  const receivedSizeRef = useRef(0);
-  
-  // Refs for callbacks to avoid stale closures
+
   const connectedRef = useRef(false);
   const roomCodeRef = useRef("");
   const joinedRef = useRef(false);
@@ -63,41 +67,66 @@ export default function App() {
   const currentFileIndexRef = useRef(0);
   const isTransferringRef = useRef(false);
   const transferRequestedRef = useRef(false);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const backgroundAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Watchdog: if ICE stays in 'checking' for 10s without connecting, force a rejoin
+  const iceWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isGestureDropRef = useRef(false);
 
   useEffect(() => {
-    roomCodeRef.current = roomCode;
-  }, [roomCode]);
+    if (typeof Audio !== 'undefined') {
+      const a = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+      a.loop = true;
+      backgroundAudioRef.current = a;
+    }
+  }, []);
 
+  useEffect(() => { roomCodeRef.current = roomCode; }, [roomCode]);
+  useEffect(() => { joinedRef.current = joined; }, [joined]);
+  useEffect(() => { connectedRef.current = connected; }, [connected]);
+  useEffect(() => { isGlobalLockedRef.current = isGlobalLocked; }, [isGlobalLocked]);
+  useEffect(() => { isSourceRef.current = isSource; }, [isSource]);
+  useEffect(() => { selectedFilesRef.current = selectedFiles; }, [selectedFiles]);
+  useEffect(() => { currentFileIndexRef.current = currentFileIndex; }, [currentFileIndex]);
+
+  // BUG 15 FIX: WakeLock to prevent mobile screen sleep during transfer
   useEffect(() => {
-    joinedRef.current = joined;
-  }, [joined]);
+    let wakeLock: any = null;
+    let isMounted = true;
 
-  useEffect(() => {
-    connectedRef.current = connected;
-  }, [connected]);
+    const requestWakeLock = async () => {
+      if ('wakeLock' in navigator && isTransferring) {
+        try {
+          const wl = await (navigator as any).wakeLock.request('screen');
+          if (isMounted && isTransferring) {
+            wakeLock = wl;
+            console.log('[WakeLock] Screen wake lock acquired');
+          } else {
+            wl.release();
+          }
+        } catch (err) {
+          console.warn('[WakeLock] Failed to acquire screen wake lock:', err);
+        }
+      }
+    };
 
-  useEffect(() => {
-    isGlobalLockedRef.current = isGlobalLocked;
-  }, [isGlobalLocked]);
+    if (isTransferring) {
+      requestWakeLock();
+    }
 
-  useEffect(() => {
-    isSourceRef.current = isSource;
-  }, [isSource]);
+    return () => {
+      isMounted = false;
+      if (wakeLock) {
+        wakeLock.release().catch(console.error);
+        console.log('[WakeLock] Screen wake lock released');
+      }
+    };
+  }, [isTransferring]);
 
-  useEffect(() => {
-    selectedFilesRef.current = selectedFiles;
-  }, [selectedFiles]);
-
-  useEffect(() => {
-    currentFileIndexRef.current = currentFileIndex;
-  }, [currentFileIndex]);
-
-  // Eager MediaPipe warm-up: preload model so camera is instantly ready
   const mediaPipeWarmedUp = useRef(false);
   const warmUpMediaPipe = useCallback(async () => {
     if (mediaPipeWarmedUp.current || !handsRef.current) return;
     try {
-      // Create a tiny offscreen canvas and send it to trigger model download+compilation
       const offscreen = document.createElement('canvas');
       offscreen.width = 2;
       offscreen.height = 2;
@@ -115,51 +144,73 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const socket = io();
+    const SERVER_URL = window.location.protocol + '//' + window.location.hostname + ':3000';
+    const socket = io(SERVER_URL);
     socketRef.current = socket;
 
-    // Initialize MediaPipe Hands eagerly
     const hands = new Hands({
-      locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-      },
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
     });
-
     hands.setOptions({
       maxNumHands: 1,
       modelComplexity: 1,
       minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5,
     });
-
-    hands.onResults((results) => {
-      // Always call with latest context
-      onResults(results);
-    });
+    hands.onResults((results) => { onResults(results); });
     handsRef.current = hands;
 
-    // Immediately trigger model download + WASM compilation
-    // This runs in background so model is ready by the time camera is needed
     warmUpMediaPipe();
 
     socket.on("connect", () => {
       console.log("Connected to signaling server");
       setIsSocketConnected(true);
-      // Re-join room if we were already in one
+      (window as any).Signaling?.onConnect?.();
       if (roomCodeRef.current.length === 4) {
-         socket.emit("join-room", roomCodeRef.current);
+        socket.emit("join-room", roomCodeRef.current);
       }
     });
 
-    socket.on("room-status", async ({ status, role }) => {
+    socket.on("disconnect", () => {
+      console.log("Disconnected from signaling server");
+      setIsSocketConnected(false);
+      (window as any).Signaling?.onDisconnect?.();
+    });
+
+    socket.on("connect_error", (err) => {
+      console.log("Signaling connect error:", err);
+      (window as any).showSignalingError?.();
+    });
+
+    socket.on("peer-disconnected", () => {
+      console.log("Peer disconnected");
+      (window as any).Signaling?.onPeerLeft?.();
+    });
+
+    socket.on("room-status", async ({ status, role, code }) => {
       console.log(`[Signaling] Room status: ${status}, role: ${role}`);
       if (status === 'waiting') {
         setJoined(true);
+        if ((window as any).transitionToSender) {
+           (window as any).transitionToSender(code || roomCodeRef.current);
+        }
       } else if (status === 'ready') {
         setJoined(true);
         if (role === 'offerer') {
+          if ((window as any).transitionToReceiver) {
+             (window as any).transitionToReceiver(code || roomCodeRef.current);
+          }
+          if ((window as any).Signaling?.onPeerJoined) {
+            (window as any).Signaling.onPeerJoined('receiver');
+          }
           await setupOfferer();
         } else {
+          if ((window as any).transitionToSender) {
+             (window as any).transitionToSender(code || roomCodeRef.current);
+          }
+          if ((window as any).Signaling?.onPeerJoined) {
+            (window as any).Signaling.onPeerJoined('sender');
+          }
           await setupAnswerer();
         }
       } else if (status === 'full') {
@@ -169,8 +220,25 @@ export default function App() {
 
     socket.on("offer", async ({ sdp }) => {
       console.log("[Signaling] Received offer");
-      if (pcRef.current) {
+      // If our PC was destroyed (e.g. ICE failure restart race), recreate it as answerer
+      // before processing the offer so it's never silently dropped.
+      if (!pcRef.current || pcRef.current.signalingState === 'closed') {
+        console.warn("[Signaling] No active PC for incoming offer — auto-creating answerer PC");
+        await setupAnswerer();
+      }
+      if (pcRef.current && pcRef.current.signalingState !== 'closed') {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+
+        const pending = pendingCandidatesRef.current;
+        pendingCandidatesRef.current = [];
+        for (const c of pending) {
+          try {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
+          } catch (e) {
+            console.error("Error adding queued ice candidate (offer)", e);
+          }
+        }
+
         const answer = await pcRef.current.createAnswer();
         await pcRef.current.setLocalDescription(answer);
         socket.emit("answer", { roomId: roomCodeRef.current, sdp: answer });
@@ -181,15 +249,30 @@ export default function App() {
       console.log("[Signaling] Received answer");
       if (pcRef.current) {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+        
+        const pending = pendingCandidatesRef.current;
+        pendingCandidatesRef.current = [];
+        for (const c of pending) {
+          try {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
+          } catch (e) {
+            console.error("Error adding queued ice candidate (answer)", e);
+          }
+        }
       }
     });
 
     socket.on("ice-candidate", async ({ candidate }) => {
-      if (pcRef.current && candidate) {
-        try {
-          await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.error("Error adding received ice candidate", e);
+      if (candidate) {
+        if (pcRef.current && pcRef.current.remoteDescription) {
+          try {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (e) {
+            console.error("Error adding received ice candidate", e);
+          }
+        } else {
+          console.log("[Signaling] remoteDescription not ready, queuing ICE candidate");
+          pendingCandidatesRef.current.push(candidate);
         }
       }
     });
@@ -203,12 +286,34 @@ export default function App() {
     socket.on("global-lock", ({ sourceId }) => {
       console.log("CONSOLE: Received global-lock from server. Source:", sourceId);
       setIsGlobalLocked(true);
+      isGlobalLockedRef.current = true;
       const isMe = socket.id === sourceId;
       setIsSource(isMe);
+      isSourceRef.current = isMe;
       if (isMe) {
         setIsGrabbed(true);
         setIsGrabbedPermanent(true);
         setTimeout(() => setIsGrabbed(false), 2000);
+        // Guaranteed FILE_META delivery: resend over WebRTC now that global-lock is confirmed.
+        // This ensures the receiver gets it even if the initial WebRTC send raced the socket event.
+        const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
+        if (currentFile) {
+          const openCtrl = controlConnRef.current.filter(c => c.readyState === 'open');
+          if (openCtrl.length > 0) {
+            const meta = JSON.stringify({
+              type: 'FILE_META',
+              file: {
+                name: currentFile.name,
+                type: currentFile.type,
+                size: currentFile.size,
+                totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
+                chunkSize: CHUNK_SIZE,
+              }
+            });
+            openCtrl.forEach(c => c.send(meta));
+            console.log('[global-lock] Resent FILE_META as guaranteed delivery');
+          }
+        }
       }
     });
 
@@ -217,13 +322,19 @@ export default function App() {
       setIsGlobalLocked(false);
       setIsSource(false);
       setIsGrabbedPermanent(false);
-      setIncomingFile(null);
-      incomingFileRef.current = null;
-      fileChunksRef.current = [];
-      setTransferProgress(0);
+      
+      if (!isTransferringRef.current) {
+        setIncomingFile(null);
+        incomingFileRef.current = null;
+        fileChunksRef.current = [];
+        setTransferProgress(0);
+      }
+
       setIsDropped(true);
       setTimeout(() => setIsDropped(false), 2000);
       isGrabbedPermanentRef.current = false;
+      // BUG 9 FIX: Reset transferRequestedRef on unlock so retry drop gestures work
+      transferRequestedRef.current = false;
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -231,6 +342,9 @@ export default function App() {
 
     socket.on("disconnect", () => {
       console.log("Disconnected from signaling server");
+      if (backgroundAudioRef.current) {
+        backgroundAudioRef.current.pause();
+      }
       setIsSocketConnected(false);
       setIsGrabbedPermanent(false);
       isGrabbedPermanentRef.current = false;
@@ -242,10 +356,10 @@ export default function App() {
       isTransferringFastRef.current = false;
       setIsTransferring(false);
       transferRequestedRef.current = false;
-      
+
       if (pcRef.current) {
-         pcRef.current.close();
-         pcRef.current = null;
+        pcRef.current.close();
+        pcRef.current = null;
       }
       connRef.current = [];
       controlConnRef.current = [];
@@ -254,18 +368,12 @@ export default function App() {
 
     return () => {
       socket.disconnect();
-      if (pcRef.current) {
-        pcRef.current.close();
-      }
-      if (handsRef.current) {
-        handsRef.current.close();
-      }
-      // Terminate transfer engine workers on unmount
+      if (pcRef.current) { pcRef.current.close(); }
+      if (handsRef.current) { handsRef.current.close(); }
       if (transferEngineRef.current) {
         transferEngineRef.current.cleanup();
         transferEngineRef.current = null;
       }
-      // Reset FSA state
       saveDirectoryHandleRef.current = null;
       hasSaveDirectoryRef.current = false;
     };
@@ -273,7 +381,7 @@ export default function App() {
 
   const startCamera = useCallback(async () => {
     if (isCameraActive || isMediaPipeDead) return;
-    
+
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       setCameraError(null);
       try {
@@ -282,38 +390,32 @@ export default function App() {
           videoRef.current.srcObject = stream;
           videoRef.current.play();
           setIsCameraActive(true);
-          
+
           let isProcessing = false;
           const processVideo = async () => {
             if (isMediaPipeDead) return;
-
             if (isTransferringFastRef.current) {
               requestRef.current = requestAnimationFrame(processVideo);
               return;
             }
-
             if (videoRef.current && handsRef.current && videoRef.current.srcObject && !isProcessing) {
-              // Ensure video has valid dimensions to avoid MediaPipe WASM crashes
               if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
                 isProcessing = true;
                 try {
                   await handsRef.current.send({ image: videoRef.current });
                 } catch (err: any) {
                   console.error("MediaPipe send error:", err);
-                  // If it's a fatal WASM error, stop the loop
                   if (err.message?.includes("abort") || err.message?.includes("memory")) {
                     setIsMediaPipeDead(true);
                     setCameraError("Gesture recognition engine crashed. Please refresh the page.");
                     return;
                   }
-                  // For non-fatal errors, skip a few frames
                   await new Promise(resolve => setTimeout(resolve, 200));
                 } finally {
                   isProcessing = false;
                 }
               }
             }
-            
             if (videoRef.current && videoRef.current.srcObject && !isMediaPipeDead) {
               requestRef.current = requestAnimationFrame(processVideo);
             }
@@ -335,23 +437,16 @@ export default function App() {
 
   const stopCamera = useCallback(() => {
     if (!isCameraActive) return;
-    
     console.log("Stopping camera and clearing canvas...");
-    
-    // Stop the animation loop
     if (requestRef.current) {
       cancelAnimationFrame(requestRef.current);
       requestRef.current = null;
     }
-
-    // Stop the video stream
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(track => track.stop());
       videoRef.current.srcObject = null;
     }
-
-    // Clear the canvas to prevent "freezing" on the last frame
     if (canvasRef.current) {
       const ctx = canvasRef.current.getContext("2d");
       if (ctx) {
@@ -360,18 +455,12 @@ export default function App() {
         ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
       }
     }
-
     setIsCameraActive(false);
   }, [isCameraActive]);
 
   useEffect(() => {
-    // Camera should be ON if:
-    // 1. I have files selected (I am potential source)
-    // 2. The room is locked AND I am NOT the source (I am the potential target)
-    // AND we are NOT currently transferring a file.
-    // AND we have not grabbed the file yet.
-    const shouldBeOn = joined && !isTransferring && !isGrabbedPermanent && (selectedFiles.length > 0 || (isGlobalLocked && !isSource));
-    
+    const shouldBeOn = joined && !isTransferring && !isGrabbedPermanent &&
+      (selectedFiles.length > 0 || (isGlobalLocked && !isSource));
     if (shouldBeOn) {
       startCamera();
     } else if (isCameraActive) {
@@ -379,9 +468,32 @@ export default function App() {
     }
   }, [joined, selectedFiles, isGlobalLocked, isSource, startCamera, stopCamera, isCameraActive, isTransferring, isGrabbedPermanent]);
 
+  // Connection health-check: if we joined but P2P never connected, periodically rejoin.
+  // This handles the race where the ICE restart loop stalls (e.g. offer/answer race on LAN).
+  useEffect(() => {
+    if (!joined) return;
+    const joinedAt = Date.now();
+    const INITIAL_WAIT_MS = 8000;  // Wait 8s before first attempt
+    const RETRY_INTERVAL_MS = 6000; // Check every 6s
+    const MAX_ATTEMPTS = 4;
+    let attempts = 0;
+
+    const interval = setInterval(() => {
+      if (connectedRef.current || isTransferringRef.current) return; // Already good
+      if (Date.now() - joinedAt < INITIAL_WAIT_MS) return; // Too early
+      if (attempts >= MAX_ATTEMPTS) { clearInterval(interval); return; } // Give up
+      if (!socketRef.current?.connected || roomCodeRef.current.length !== 4) return;
+
+      attempts++;
+      console.warn(`[HealthCheck] Joined but not P2P connected — auto-rejoin attempt ${attempts}/${MAX_ATTEMPTS}`);
+      socketRef.current.emit('join-room', roomCodeRef.current);
+    }, RETRY_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [joined]);
+
   const onResults = (results: Results) => {
     if (!canvasRef.current || !videoRef.current || !joinedRef.current) return;
-
     const canvasCtx = canvasRef.current.getContext("2d");
     if (!canvasCtx) return;
 
@@ -391,29 +503,24 @@ export default function App() {
 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
       for (const landmarks of results.multiHandLandmarks) {
-        // Improved Gesture Detection using distances from wrist
         const wrist = landmarks[0];
-        
-        // Fist Detection: Tips are closer to the wrist than the MCP joints (curled)
+
         const isFist = [8, 12, 16, 20].every(tipIdx => {
           const mcpIdx = tipIdx - 3;
           const tipDist = Math.sqrt(Math.pow(landmarks[tipIdx].x - wrist.x, 2) + Math.pow(landmarks[tipIdx].y - wrist.y, 2));
           const mcpDist = Math.sqrt(Math.pow(landmarks[mcpIdx].x - wrist.x, 2) + Math.pow(landmarks[mcpIdx].y - wrist.y, 2));
-          return tipDist < mcpDist * 1.2; // Fingers are curled in
+          return tipDist < mcpDist * 1.2;
         });
-        
-        // Palm Detection: Tips are significantly further from the wrist than the MCP joints (extended)
-        // Check if at least 3 fingers are extended for better reliability
+
         const extendedFingers = [8, 12, 16, 20].filter(tipIdx => {
           const mcpIdx = tipIdx - 3;
           const tipDist = Math.sqrt(Math.pow(landmarks[tipIdx].x - wrist.x, 2) + Math.pow(landmarks[tipIdx].y - wrist.y, 2));
           const mcpDist = Math.sqrt(Math.pow(landmarks[mcpIdx].x - wrist.x, 2) + Math.pow(landmarks[mcpIdx].y - wrist.y, 2));
-          return tipDist > mcpDist * 1.4; // Fingers are extended out
+          return tipDist > mcpDist * 1.4;
         }).length;
-        
+
         const isPalm = extendedFingers >= 3;
 
-        // Visual Debugging on Canvas
         canvasCtx.fillStyle = "white";
         canvasCtx.font = "bold 20px sans-serif";
         let gestureText = "NONE";
@@ -428,18 +535,15 @@ export default function App() {
         canvasCtx.fillText(`GESTURE: ${gestureText}`, 20, 40);
         canvasCtx.fillText(`EXTENDED: ${extendedFingers}/4`, 20, 70);
 
-        // Draw with feedback color
-        let color = "#00FF00"; // Green for idle
-        if (isFist) color = "#3b82f6"; // Blue for grab
-        if (isPalm && isGlobalLockedRef.current && !isSourceRef.current) color = "#10b981"; // Emerald for drop
-        if (isPalm && isSourceRef.current && isGlobalLockedRef.current) color = "#f59e0b"; // Amber for source (cannot drop)
+        let color = "#00FF00";
+        if (isFist) color = "#3b82f6";
+        if (isPalm && isGlobalLockedRef.current && !isSourceRef.current) color = "#10b981";
+        if (isPalm && isSourceRef.current && isGlobalLockedRef.current) color = "#f59e0b";
 
         drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color, lineWidth: 5 });
         drawLandmarks(canvasCtx, landmarks, { color: isFist ? "#ffffff" : "#FF0000", lineWidth: 2 });
 
         if (!isGlobalLockedRef.current) {
-          // SYSTEM IS IDLE: Look for Grab (Fist)
-          // ONLY trigger if a file is selected on THIS device
           if (isFist && lastGestureRef.current !== "fist" && selectedFilesRef.current.length > 0) {
             console.log("GESTURE: GRAB DETECTED - Files:", selectedFilesRef.current.length);
             lastGestureRef.current = "fist";
@@ -449,29 +553,24 @@ export default function App() {
             lastGestureRef.current = "none";
           }
         } else {
-          // SYSTEM IS LOCKED: Data is in the tunnel
           if (!isSourceRef.current) {
-            // I AM THE TARGET: Look for Drop (Palm)
-            // Trigger if we see a palm. We'll handle the "no chunks" case inside handleDropAction
             if (isPalm && lastGestureRef.current !== "palm") {
               console.log("GESTURE: DROP DETECTED - Triggering drop action");
               lastGestureRef.current = "palm";
+              isGestureDropRef.current = true;   // mark as gesture-initiated
               handleDropAction();
             } else if (!isPalm) {
-              // Reset palm gesture if hand is closed or moved
               if (lastGestureRef.current === "palm") {
                 lastGestureRef.current = "none";
               }
             }
           }
-          // I AM THE SOURCE: Ignore all gestures until unlocked
         }
       }
     }
     canvasCtx.restore();
   };
 
-  // Get the current file to send (based on currentFileIndex)
   const getCurrentFile = useCallback((): File | null => {
     const files = selectedFilesRef.current;
     const idx = currentFileIndexRef.current;
@@ -483,35 +582,43 @@ export default function App() {
     const fileToSend = getCurrentFile();
     if (!fileToSend) {
       console.log("CONSOLE: handleGrabAction aborted - no file selected");
+      setMessages(prev => [...prev, "ERROR: No file selected. Please select a file first."]);
       return;
     }
-    
+
     try {
       const totalFiles = selectedFilesRef.current.length;
       const fileNum = currentFileIndexRef.current + 1;
       console.log(`CONSOLE: Grabbed file "${fileToSend.name}" (${fileNum}/${totalFiles})`);
-      setMessages((prev) => [...prev, `SYSTEM: Grabbed file "${fileToSend.name}" (${fileNum}/${totalFiles}). Waiting for receiver to drop...`]);
-      
-      // Reset transfer state for new grab
+
       isTransferringRef.current = false;
       transferRequestedRef.current = false;
-      
-      // Only send metadata on grab. Transfer starts on drop.
-      if (controlConnRef.current.length > 0 && connectedRef.current) {
-        controlConnRef.current.forEach(c => c.send(JSON.stringify({
-          type: "FILE_META",
-          file: {
-            name: fileToSend.name,
-            type: fileToSend.type,
-            size: fileToSend.size,
-            totalChunks: Math.ceil(fileToSend.size / CHUNK_SIZE),
-            chunkSize: CHUNK_SIZE
-          }
-        })));
+
+      // BUG 7 + 11 FIX: Use readyState directly — never rely on connectedRef.current
+      const openCtrl = controlConnRef.current.filter(c => c.readyState === 'open');
+      const openData = connRef.current.filter(c => c.readyState === 'open');
+      console.log(`CONSOLE: handleGrabAction — control channels: ${controlConnRef.current.length} total, ${openCtrl.length} open | data channels: ${connRef.current.length} total, ${openData.length} open`);
+
+      if (openCtrl.length > 0) {
+        const fileMeta = {
+          name: fileToSend.name,
+          type: fileToSend.type,
+          size: fileToSend.size,
+          totalChunks: Math.ceil(fileToSend.size / CHUNK_SIZE),
+          chunkSize: CHUNK_SIZE
+        };
+        openCtrl.forEach(c => c.send(JSON.stringify({ type: "FILE_META", file: fileMeta })));
+        setMessages((prev) => [...prev, `SYSTEM: Grabbed "${fileToSend.name}" (${fileNum}/${totalFiles}). FILE_META sent. Waiting for receiver to drop...`]);
+        console.log(`CONSOLE: FILE_META sent for "${fileToSend.name}"`);
+      } else {
+        // Channels not open yet — still emit the grab so the room locks,
+        // FILE_META will be resent automatically when channels open (see setupDataChannel handleOpen)
+        console.warn("CONSOLE: handleGrabAction — no open control channels yet. FILE_META will be sent when WebRTC connects.");
+        setMessages((prev) => [...prev, `SYSTEM: Grabbed "${fileToSend.name}" (${fileNum}/${totalFiles}). Waiting for P2P connection to send file info...`]);
       }
     } catch (err) {
       console.error("Grab action failed:", err);
-      setSelectedFiles([]); // Clear on error to allow retry and turn off camera
+      setSelectedFiles([]);
       simulateDrop();
     }
   };
@@ -520,68 +627,172 @@ export default function App() {
     const file = fileOverride || getCurrentFile();
     if (!file) {
       console.error("CONSOLE: Cannot send file: No file available");
+      setMessages(prev => [...prev, "ERROR: Cannot send file: No file available to send."]);
       return;
     }
 
-    if (!connRef.current || !connectedRef.current) {
-      console.error("CONSOLE: Cannot send file: Peer connection not ready");
+    const openDataChans = connRef.current.filter(c => c.readyState === 'open');
+    if (openDataChans.length === 0) {
+      console.error("CONSOLE: Cannot send file: No open data channels");
+      setMessages(prev => [...prev, `ERROR: Cannot send file: No open data channels (Total: ${connRef.current.length}).`]);
       return;
     }
 
     if (isTransferringRef.current) {
       console.log("CONSOLE: Transfer already in progress. Ignoring duplicate request.");
+      setMessages(prev => [...prev, "WARNING: Transfer already in progress. Ignoring duplicate request."]);
       return;
     }
 
     isTransferringFastRef.current = true;
     console.log(`CONSOLE: Starting transfer of ${file.name} (${file.size} bytes)`);
+    setMessages(prev => [...prev, `SYSTEM: Starting transfer of ${file.name} over ${openDataChans.length} data channels.`]);
     isTransferringRef.current = true;
     setIsTransferring(true);
-    
-    const newEngine = createTransferEngine(connRef.current);
-    newEngine.startTransfer(file, resumeManifest);
+
+    let engine = transferEngineRef.current;
+    if (!engine) {
+      engine = new TransferEngine(connRef.current);
+      engine.setControlConnections(controlConnRef.current);
+      transferEngineRef.current = engine;
+      engine.setCallbacks(
+        (t) => { setTelemetry(t); setTransferProgress(t.progress); },
+        (blob) => {
+          if (blob instanceof Blob) handleEngineComplete(blob);
+          else if (blob === null) handleEngineComplete(null);
+          else console.log("CONSOLE: Sender finished. Waiting for TRANSFER_COMPLETE.");
+        }
+      );
+    } else {
+      engine.setConnections(connRef.current, controlConnRef.current);
+    }
+    engine.startTransfer(file, resumeManifest);
   };
 
-  const handleDropAction = () => {
-    // If I am the receiver, initiate the transfer
+  const handleDropAction = async () => {
     if (!isSourceRef.current) {
-      if (transferRequestedRef.current) {
-        console.log("CONSOLE: Transfer already requested. Ignoring duplicate drop.");
+      // Detailed state logging for debugging
+      const openCtrl = controlConnRef.current.filter(c => c.readyState === 'open');
+      const openData = connRef.current.filter(c => c.readyState === 'open');
+      console.log(`CONSOLE: handleDropAction — incomingFile: ${JSON.stringify(incomingFileRef.current)} | control: ${openCtrl.length}/${controlConnRef.current.length} open | data: ${openData.length}/${connRef.current.length} open | transferRequested: ${transferRequestedRef.current}`);
+
+      // BUG 8 FIX: Reject drop if FILE_META hasn't arrived yet
+      if (!incomingFileRef.current) {
+        console.warn("CONSOLE: Drop ignored — file metadata not received yet.");
+        setMessages(prev => [...prev, "ERROR: Drop failed — file info not received yet. Make sure sender has selected a file and grabbed. Check if P2P is connected."]);
         return;
       }
 
-      console.log("CONSOLE: Drop gesture recognized on receiver. Requesting transfer.");
+      if (transferRequestedRef.current) {
+        console.log("CONSOLE: Transfer already requested. Ignoring duplicate drop.");
+        setMessages(prev => [...prev, "SYSTEM: Transfer already in progress."]);
+        return;
+      }
+
+      if (openCtrl.length === 0) {
+        console.error("CONSOLE: handleDropAction — no open control channels.");
+        setMessages(prev => [...prev, `ERROR: Cannot drop — P2P not connected (control: ${openCtrl.length}/${controlConnRef.current.length}, data: ${openData.length}/${connRef.current.length}). Wait for 'P2P Connected' status.`]);
+        return;
+      }
+
+      if (!saveDirectoryHandleRef.current && typeof (window as any).showSaveFilePicker !== 'undefined' && !isGestureDropRef.current) {
+        try {
+          const handle = await (window as any).showSaveFilePicker({
+            suggestedName: incomingFileRef.current.name,
+          });
+          const writable = await handle.createWritable();
+          if (incomingFileRef.current.size > 0) {
+            await (writable as any).truncate(incomingFileRef.current.size);
+          }
+          if (transferEngineRef.current) {
+            if ((transferEngineRef.current as any).streamWriter) {
+              await (transferEngineRef.current as any).streamWriter.close().catch(() => {});
+            }
+            transferEngineRef.current.setStreamWriter(writable);
+            streamFileHandleRef.current = handle; // store so we can delete on cancel
+            opfsFileHandleRef.current = null; // BUG 16 FIX: Clear OPFS fallback to prevent downloading empty/garbage file
+          }
+          console.log(`[Stream] Set stream writer from showSaveFilePicker`);
+        } catch (err: any) {
+          if (err?.name === 'AbortError') {
+            // User explicitly dismissed the save picker — abort the transfer
+            console.warn("User cancelled save file picker");
+            isGestureDropRef.current = false;
+            return;
+          }
+          // Any other error (e.g. NotAllowedError when called outside a user gesture
+          // like from a camera gesture callback) — skip the picker and fall through
+          // to the OPFS / RAM-buffer fallback that runs after this block.
+          console.warn("showSaveFilePicker unavailable, using OPFS/RAM fallback:", err?.message ?? err);
+        }
+      }
+      // Gesture drop: skip showSaveFilePicker (not allowed outside user gesture context).
+      // OPFS fallback was already set up in the FILE_META handler. File will be
+      // served as a browser download after transfer completes via handleEngineComplete.
+      if (isGestureDropRef.current) {
+        console.log("[Gesture Drop] Skipping showSaveFilePicker — will use OPFS fallback set in FILE_META handler");
+        isGestureDropRef.current = false;
+      }
+
+      console.log("CONSOLE: Drop recognized on receiver. Requesting transfer.");
       transferRequestedRef.current = true;
       isTransferringRef.current = true;
       setIsTransferring(true);
-      setMessages(prev => [...prev, "SYSTEM: Drop recognized. Downloading file..."]);
-      
-      // Notify the sender to start sending chunks
-      if (controlConnRef.current.length > 0 && connectedRef.current) {
-        console.log("CONSOLE: Sending START_TRANSFER to peer");
-        controlConnRef.current.forEach(c => c.send(JSON.stringify({
-          type: "START_TRANSFER",
-          resumeManifest: transferEngineRef.current?.getReceivedManifest() || []
-        })));
-      }
+      setMessages(prev => [...prev, `SYSTEM: Drop recognized for "${incomingFileRef.current!.name}". Sending download request...`]);
+
+      console.log("CONSOLE: Sending START_TRANSFER to peer");
+      openCtrl.forEach(c => c.send(JSON.stringify({
+        type: "START_TRANSFER",
+        resumeManifest: transferEngineRef.current?.getReceivedManifest() || []
+      })));
+      isGestureDropRef.current = false;
+    } else {
+      setMessages(prev => [...prev, "ERROR: You are the file source. Drop must be performed on the receiving device."]);
     }
   };
 
   const cancelTransfer = () => {
     console.log("CONSOLE: Cancelling transfer");
-    
-    // Stop engine and clean up memory
     if (transferEngineRef.current) {
       transferEngineRef.current.cancel();
       transferEngineRef.current = null;
     }
-    
-    // Notify peer
-    if (controlConnRef.current.length > 0 && connectedRef.current) {
-      controlConnRef.current.forEach(c => c.send(JSON.stringify({ type: "CANCEL_TRANSFER" })));
+    // BUG 12 FIX: Use readyState directly
+    controlConnRef.current.filter(c => c.readyState === 'open')
+      .forEach(c => c.send(JSON.stringify({ type: "CANCEL_TRANSFER" })));
+
+    // ── Partial file cleanup ─────────────────────────────────────────────────
+    // Delete any partial file left by the cancelled transfer, regardless of
+    // which storage path was used. Without this, every cancel leaves garbage.
+
+    // Path 1 — showSaveFilePicker (user chose an explicit save location)
+    if (streamFileHandleRef.current) {
+      const fh = streamFileHandleRef.current;
+      streamFileHandleRef.current = null;
+      // FileSystemFileHandle.remove() available in Chrome 117+
+      if (typeof fh.remove === 'function') {
+        fh.remove().catch(() => {}); // silently ignore if already gone
+      }
     }
 
-    // Reset local state
+    // Path 2 — showDirectoryPicker (silent save to chosen folder)
+    if (saveDirectoryHandleRef.current && incomingFileRef.current?.name) {
+      const nameToDelete = incomingFileRef.current.name;
+      saveDirectoryHandleRef.current.removeEntry(nameToDelete).catch(() => {});
+    }
+
+    // Path 3 — OPFS (gesture drop / mobile)
+    if (opfsFileHandleRef.current) {
+      const nameToDelete = incomingFileRef.current?.name;
+      if (nameToDelete && navigator.storage?.getDirectory) {
+        navigator.storage.getDirectory().then(root => {
+          root.removeEntry(nameToDelete).catch(() => {});
+        }).catch(() => {});
+      }
+      opfsFileHandleRef.current = null;
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     setIncomingFile(null);
     incomingFileRef.current = null;
     fileChunksRef.current = [];
@@ -597,18 +808,9 @@ export default function App() {
     setCurrentFileIndex(0);
     currentFileIndexRef.current = 0;
     setTelemetry(null);
-    
-    // Reset file input so same file can be selected again
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-    
+    if (fileInputRef.current) { fileInputRef.current.value = ''; }
     setMessages((prev) => [...prev, `SYSTEM: Transfer cancelled.`]);
-
-    // Unlock room
-    if (socketRef.current) {
-      socketRef.current.emit("dropped", roomCodeRef.current);
-    }
+    if (socketRef.current) { socketRef.current.emit("dropped", roomCodeRef.current); }
   };
 
   const handleEngineComplete = (blob: Blob | null) => {
@@ -616,18 +818,17 @@ export default function App() {
 
     const fileName = incomingFileRef.current?.name || "downloaded_file";
     console.log(`CONSOLE: Finalizing file "${fileName}" (${blob ? 'buffered' : 'streamed to disk'})`);
-    
-    // Add to received files list (streaming mode has no re-downloadable blob)
+
     if (blob) {
       const newFile = {
         name: fileName,
         blob: blob,
+        opfsHandle: null,
         id: Math.random().toString(36).substring(7)
       };
       setReceivedFiles(prev => [newFile, ...prev]);
     }
 
-    // ── Reset state ────────────────────────────────────────────────────
     setIncomingFile(null);
     incomingFileRef.current = null;
     fileChunksRef.current = [];
@@ -636,30 +837,50 @@ export default function App() {
     isTransferringFastRef.current = false;
     setIsTransferring(false);
     setTelemetry(null);
+    streamFileHandleRef.current = null; // clear — file completed successfully, no cleanup needed
     if (transferEngineRef.current) {
       transferEngineRef.current.cleanup();
       transferEngineRef.current = null;
     }
 
-    // ── CRITICAL: Send TRANSFER_COMPLETE synchronously before any async file I/O ─
-    // Sender is blocked waiting for this. Any await before this = deadlock.
-    if (controlConnRef.current.length > 0 && connectedRef.current) {
+    // BUG 12 FIX: Use readyState directly — critical, must send before any async I/O
+    const openCtrlForComplete = controlConnRef.current.filter(c => c.readyState === 'open');
+    if (openCtrlForComplete.length > 0) {
       console.log("CONSOLE: Sending TRANSFER_COMPLETE to peer");
-      controlConnRef.current.forEach(c => c.send(JSON.stringify({ type: "TRANSFER_COMPLETE" })));
+      openCtrlForComplete.forEach(c => c.send(JSON.stringify({ type: "TRANSFER_COMPLETE" })));
+    } else {
+      console.error("CONSOLE: handleEngineComplete — no open control channels! TRANSFER_COMPLETE NOT sent. Sender will hang.");
     }
-    
-    // ── Save / notify async AFTER unblocking sender ───────────────────────
+
     if (blob) {
-      // Buffered mode: blob in RAM — save to disk async
       saveFileAsync(blob, fileName);
     } else {
-      // Streaming mode: file already written to disk by the engine
-      setMessages(prev => [...prev, `SYSTEM: ✓ Saved to folder: ${fileName}`]);
+      if (opfsFileHandleRef.current) {
+        // Streamed to OPFS — add to receivedFiles with the OPFS handle.
+        // CRITICAL: do NOT call removeEntry() here. The File object returned by getFile()
+        // is tied to the OPFS entry. If we delete the entry before the user downloads,
+        // URL.createObjectURL(file) will fail with "Check internet connection" because the
+        // underlying storage is gone. We delete OPFS only AFTER a successful save.
+        const savedHandle = opfsFileHandleRef.current;
+        opfsFileHandleRef.current = null;
+        savedHandle.getFile().then((file: File) => {
+          setReceivedFiles(prev => [{
+            name: fileName,
+            blob: file as unknown as Blob,
+            opfsHandle: savedHandle,   // keep alive — deleted after user saves
+            id: Math.random().toString(36).substring(7)
+          }, ...prev]);
+          setMessages(prev => [...prev, `SYSTEM: ✅ Received: "${fileName}" — tap the Download button to save.`]);
+        }).catch((err: any) => {
+          console.error('Failed to retrieve OPFS file:', err);
+          setMessages(prev => [...prev, `ERROR: Failed to read received file "${fileName}": ${err?.message ?? err}`]);
+        });
+      } else {
+        setMessages(prev => [...prev, `SYSTEM: ✓ Saved to folder: ${fileName} directly to disk.`]);
+      }
     }
   };
 
-  // Saves a file using the File System Access API (one directory prompt per session)
-  // or falls back to the <a download> method. Runs after the sender is already unblocked.
   const saveFileAsync = async (blob: Blob, fileName: string) => {
     const fsaAvailable = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
     let savedSilently = false;
@@ -701,7 +922,7 @@ export default function App() {
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 30_000);
+        setTimeout(() => URL.revokeObjectURL(url), 60_000); // 60s: gives Chrome time to fully read large blobs before revocation
         setMessages(prev => [...prev, `SYSTEM: Received & Saved: ${fileName}`]);
       } catch (e) {
         console.error('Auto-download failed:', e);
@@ -718,73 +939,146 @@ export default function App() {
 
   const resetWebRTCConnection = useCallback(() => {
     console.log("Resetting WebRTC Connection...");
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
+    // Clear ICE watchdog
+    if (iceWatchdogRef.current) { clearTimeout(iceWatchdogRef.current); iceWatchdogRef.current = null; }
+    // Use cleanup() not destroy() — destroy() closes data channels before the PC does,
+    // causing double-close errors and lost onmessage handlers on reconnect.
     if (transferEngineRef.current) {
-      transferEngineRef.current.destroy();
+      transferEngineRef.current.cleanup();
       transferEngineRef.current = null;
+    }
+    if (pcRef.current) {
+      pcRef.current.close(); // PC.close() closes all channels automatically
+      pcRef.current = null;
     }
     connRef.current = [];
     controlConnRef.current = [];
+    pendingCandidatesRef.current = [];
     setConnected(false);
+    connectedRef.current = false;
     isTransferringFastRef.current = false;
     isTransferringRef.current = false;
     setIsTransferring(false);
-    
-    // Re-emit join-room to restart the matching process
+
     if (socketRef.current && roomCodeRef.current.length === 4) {
       setTimeout(() => {
-         socketRef.current?.emit("join-room", roomCodeRef.current);
+        socketRef.current?.emit("join-room", roomCodeRef.current);
       }, 100);
     }
   }, []);
 
   const createPeerConnection = useCallback(() => {
-    if (pcRef.current) {
-       pcRef.current.close();
-    }
+    if (pcRef.current) { pcRef.current.close(); }
     const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          }
-        ]
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+      ],
+      // max-bundle: all data channels share one ICE path — critical on NAT/hotspot networks
+      bundlePolicy: 'max-bundle' as RTCBundlePolicy,
+      // Pre-gather a pool of ICE candidates before signaling starts for faster connection
+      iceCandidatePoolSize: 3,
     });
-    
-    // 3-second ICE gathering timeout to force trickle if stuck
-    let iceTimeout: any;
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        // Trickle ICE
         socketRef.current?.emit("ice-candidate", { roomId: roomCodeRef.current, candidate: event.candidate });
       } else {
-        console.log("ICE gathering complete natively.");
+        console.log("[ICE] Gathering complete.");
       }
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log("ICE Connection State:", pc.iceConnectionState);
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-         setConnected(true);
-      } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-         setConnected(false);
+      const state = pc.iceConnectionState;
+      console.log("[ICE] Connection State:", state);
+
+      if (state === 'checking') {
+        // Start a watchdog: if ICE is still 'checking' after 10s, it's stuck (common on
+        // mobile hotspot where mDNS candidates silently fail). Force a full rejoin.
+        if (iceWatchdogRef.current) clearTimeout(iceWatchdogRef.current);
+        iceWatchdogRef.current = setTimeout(() => {
+          if (pc.iceConnectionState === 'checking' && !connectedRef.current) {
+            console.warn('[ICE] Watchdog: stuck in checking for 10s — forcing rejoin');
+            pc.close();
+            if (pcRef.current === pc) {
+              pcRef.current = null;
+              connRef.current = [];
+              controlConnRef.current = [];
+              pendingCandidatesRef.current = [];
+            }
+            if (socketRef.current?.connected && roomCodeRef.current.length === 4) {
+              socketRef.current.emit('join-room', roomCodeRef.current);
+            }
+          }
+        }, 10000);
+      } else if (state === 'connected' || state === 'completed') {
+        // Clear watchdog — we made it
+        if (iceWatchdogRef.current) { clearTimeout(iceWatchdogRef.current); iceWatchdogRef.current = null; }
+        connectedRef.current = true;
+        setConnected(true);
+        // Re-register onbufferedamountlow after ICE selects its final candidate pair.
+        // On mobile, ICE can promote to a new candidate pair after data channels open,
+        // silently dropping threshold callbacks registered during initial channel setup.
+        if (transferEngineRef.current) {
+          transferEngineRef.current.tuneSocketBuffers();
+          console.log('[ICE] Re-tuned socket buffers after ICE connected');
+        }
+      } else if (state === 'disconnected') {
+        // Transient disconnect — try ICE restart first
+        connectedRef.current = false;
+        setConnected(false);
+        console.log("[ICE] Disconnected — attempting ICE restart");
+        try { pc.restartIce(); } catch (e) { console.warn('[ICE] restartIce() not supported:', e); }
+      } else if (state === 'failed') {
+        // Full ICE failure — tear down and rejoin
+        if (iceWatchdogRef.current) { clearTimeout(iceWatchdogRef.current); iceWatchdogRef.current = null; }
+        connectedRef.current = false;
+        setConnected(false);
+        console.log("[ICE] Failed — tearing down and restarting WebRTC handshake in 1.5s...");
+        pc.close();
+        if (pcRef.current === pc) {
+          pcRef.current = null;
+          connRef.current = [];
+          controlConnRef.current = [];
+          pendingCandidatesRef.current = [];
+        }
+        setTimeout(() => {
+          if (!connectedRef.current && socketRef.current?.connected && roomCodeRef.current.length === 4) {
+            console.log("[ICE] Re-emitting join-room to restart signaling...");
+            socketRef.current.emit("join-room", roomCodeRef.current);
+          }
+        }, 1500);
+      }
+    };
+
+    // connectionState is a more holistic signal than iceConnectionState (includes DTLS).
+    // This acts as a backup trigger for setConnected(true) if iceConnectionState fires late.
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      console.log("[WebRTC] Connection State:", state);
+      if (state === 'connected') {
+        connectedRef.current = true;
+        setConnected(true);
+      } else if (state === 'failed') {
+        // Already handled by iceconnectionstatechange above
+        connectedRef.current = false;
+        setConnected(false);
       }
     };
 
@@ -793,329 +1087,433 @@ export default function App() {
   }, []);
 
   const setupDataChannel = useCallback((dc: RTCDataChannel) => {
-     dc.binaryType = 'arraybuffer';
+    dc.binaryType = 'arraybuffer';
 
-     dc.onopen = () => {
-        console.log(`DataChannel ${dc.label} is open`);
-        const allDataOpen = connRef.current.length === 3 && connRef.current.every(c => c.readyState === 'open');
-        const ctrlOpen = controlConnRef.current[0]?.readyState === 'open';
-        
-        if (allDataOpen && ctrlOpen) {
-           console.log("All channels open! Initializing TransferEngine...");
-           setConnected(true);
-           setupEngineConnections(connRef.current, controlConnRef.current);
+    // BUG 6 FIX: extract onopen body into named function so we can detect
+    // channels that already opened before the handler was registered (LAN race).
+    // BUG 7 FIX: synchronously update connectedRef BEFORE React state to close the 16ms window.
+    // BUG 3 FIX: check both connRef AND controlConnRef independently with .every(open).
+    const handleOpen = () => {
+      console.log(`DataChannel ${dc.label} is open (readyState: ${dc.readyState})`);
+
+      const allDataOpen = connRef.current.length > 0 && connRef.current.every(c => c.readyState === 'open');
+      const ctrlOpen = controlConnRef.current.length > 0 && controlConnRef.current.every(c => c.readyState === 'open');
+      const totalOpen = connRef.current.filter(c => c.readyState === 'open').length +
+                        controlConnRef.current.filter(c => c.readyState === 'open').length;
+      const expectedTotal = 2; // 1 data + 1 control
+
+      if (allDataOpen && ctrlOpen && totalOpen >= expectedTotal) {
+        console.log("All 2 channels open! Setting connected = true");
+        // BUG 7 FIX: sync ref update before React state (no 16ms vulnerability)
+        connectedRef.current = true;
+        setConnected(true);
+
+        if (transferEngineRef.current) {
+          transferEngineRef.current.setConnections(connRef.current, controlConnRef.current);
         }
-     };
 
-     dc.onclose = () => {
-        console.log(`DataChannel ${dc.label} closed`);
-        if (dc.label === 'control') {
-          controlConnRef.current = controlConnRef.current.filter(c => c !== dc);
-        } else {
-          connRef.current = connRef.current.filter(c => c !== dc);
+        const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
+        // BUG FIX (laptop→phone direction): isSourceRef.current may still be false here
+        // because the global-lock socket round-trip races with WebRTC channel opening.
+        // We also check selectedFilesRef directly — if we have a file selected, we ARE the
+        // sender regardless of whether the socket event has updated the ref yet.
+        const iAmSender = isSourceRef.current || (currentFile != null && isGlobalLockedRef.current);
+        if (iAmSender && currentFile && controlConnRef.current.length > 0) {
+          console.log("CONSOLE: Resending FILE_META on channel open (iAmSender check: isSourceRef=", isSourceRef.current, "hasFile=", !!currentFile, "isGlobalLocked=", isGlobalLockedRef.current, ")");
+          const metaPayload = JSON.stringify({
+            type: "FILE_META",
+            file: {
+              name: currentFile.name,
+              type: currentFile.type,
+              size: currentFile.size,
+              totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
+              chunkSize: CHUNK_SIZE
+            }
+          });
+          controlConnRef.current.forEach(c => {
+            if (c.readyState === 'open') c.send(metaPayload);
+          });
+        } else if (!iAmSender && currentFile && !isGlobalLockedRef.current) {
+          // Channels just opened and we have a file but room isn't locked yet — grab was likely
+          // emitted just before channels opened. Send FILE_META proactively; the grab event
+          // will lock the room on both sides shortly after.
+          console.log("CONSOLE: Channels opened with file selected but room not locked yet — sending FILE_META proactively");
+          const metaPayload = JSON.stringify({
+            type: "FILE_META",
+            file: {
+              name: currentFile.name,
+              type: currentFile.type,
+              size: currentFile.size,
+              totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
+              chunkSize: CHUNK_SIZE
+            }
+          });
+          controlConnRef.current.forEach(c => {
+            if (c.readyState === 'open') c.send(metaPayload);
+          });
         }
-        if (connRef.current.length === 0 && controlConnRef.current.length === 0) {
-          setConnected(false);
-          transferEngineRef.current?.destroy();
-          transferEngineRef.current = null;
+
+        if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && transferRequestedRef.current && transferEngineRef.current) {
+          const resumeManifest = transferEngineRef.current.getReceivedManifest();
+          console.log(`CONSOLE: Resuming transfer with ${resumeManifest.length} already-received chunks`);
+          isTransferringRef.current = true;
+          setIsTransferring(true);
+          controlConnRef.current.forEach(c => {
+            if (c.readyState === 'open') {
+              c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest }));
+            }
+          });
         }
-     };
-
-     dc.onerror = (err) => {
-        console.error(`DataChannel ${dc.label} error:`, err);
-     };
-
-     if (dc.label === 'control') {
-        dc.onmessage = async (e) => {
-           const data = e.data;
-           const isBinary = data instanceof ArrayBuffer || 
-                           (typeof Blob !== 'undefined' && data instanceof Blob) ||
-                           (data && (data as any).buffer instanceof ArrayBuffer);
-           if (isBinary) {
-             let buffer: ArrayBuffer;
-             if (data instanceof ArrayBuffer) {
-               buffer = data;
-             } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
-               buffer = await data.arrayBuffer();
-             } else {
-               buffer = (data as any).buffer;
-             }
-
-             if (buffer.byteLength === 5) {
-               const view = new DataView(buffer);
-               const type = view.getUint8(0);
-               const index = view.getUint32(1, true);
-               if (type === 0x02) {
-                 transferEngineRef.current?.processAck(index);
-               } else if (type === 0x03) {
-                 transferEngineRef.current?.processNack(index);
-               }
-             }
-             return;
-           }
-
-           let payload = data;
-           if (typeof data === 'string') {
-             try { payload = JSON.parse(data); } catch (err) { payload = data; }
-           }
-           
-           if (payload && typeof payload === 'object') {
-             if (payload.type === "FILE_META") {
-               console.log("CONSOLE: Received FILE_META:", payload.file);
-               incomingFileRef.current = payload.file;
-               setIncomingFile(payload.file);
-               
-               const newEngine = createTransferEngine(connRef.current);
-               newEngine.initReceiver(payload.file);
-
-               if (saveDirectoryHandleRef.current) {
-                 try {
-                   const fh = await saveDirectoryHandleRef.current.getFileHandle(
-                     payload.file.name, { create: true }
-                   );
-                   const wr = await fh.createWritable();
-                   if (payload.file.size > 0) {
-                     await (wr as any).truncate(payload.file.size);
-                   }
-                   newEngine.setStreamWriter(wr);
-                   console.log(`[Stream] Ready → streaming "${payload.file.name}" to disk`);
-                 } catch (streamErr) {
-                   console.warn('[Stream] Failed to open file for streaming:', streamErr);
-                 }
-               }
-               
-               if (transferRequestedRef.current && isGlobalLockedRef.current && !isSourceRef.current) {
-                 console.log("CONSOLE: Auto-accepting next file in multi-file transfer");
-                 isTransferringRef.current = true;
-                 setIsTransferring(true);
-                 controlConnRef.current.forEach(c => {
-                   if (c.readyState === 'open') {
-                     c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest: [] }));
-                   }
-                 });
-                 setMessages((prev) => [...prev, `SYSTEM: Auto-downloading next file: ${payload.file.name}`]);
-               } else {
-                 transferRequestedRef.current = false;
-                 setMessages((prev) => [...prev, `SYSTEM: Incoming file ready: ${payload.file.name}. Perform DROP gesture to download.`]);
-               }
-             } else if (payload.type === "START_TRANSFER") {
-               console.log("CONSOLE: Received START_TRANSFER from peer. Executing transfer.");
-               const fileToSend = selectedFilesRef.current[currentFileIndexRef.current];
-               if (fileToSend) {
-                 executeTransfer(fileToSend, payload.resumeManifest || []);
-               }
-             } else if (payload.type === "CANCEL_TRANSFER") {
-               console.log("CONSOLE: Received CANCEL_TRANSFER from peer.");
-               if (transferEngineRef.current) {
-                 transferEngineRef.current.cancel();
-               }
-               setIncomingFile(null);
-               incomingFileRef.current = null;
-               fileChunksRef.current = [];
-               setTransferProgress(0);
-               transferRequestedRef.current = false;
-               isTransferringRef.current = false;
-               setIsTransferring(false);
-               setSelectedFiles([]);
-               selectedFilesRef.current = [];
-               setCurrentFileIndex(0);
-               currentFileIndexRef.current = 0;
-               setTelemetry(null);
-               if (fileInputRef.current) fileInputRef.current.value = '';
-               setMessages((prev) => [...prev, `SYSTEM: Peer cancelled the transfer.`]);
-             } else if (payload.type === "TRANSFER_COMPLETE") {
-               console.log("CONSOLE: Received TRANSFER_COMPLETE from peer");
-               isTransferringRef.current = false;
-               isTransferringFastRef.current = false;
-               setIsTransferring(false);
-               setTelemetry(null);
-               if (transferEngineRef.current) {
-                 transferEngineRef.current.destroy();
-                 transferEngineRef.current = null;
-               }
-               
-               const nextIdx = currentFileIndexRef.current + 1;
-               if (nextIdx < selectedFilesRef.current.length) {
-                 setCurrentFileIndex(nextIdx);
-                 currentFileIndexRef.current = nextIdx;
-                 const nextFile = selectedFilesRef.current[nextIdx];
-                 setMessages((prev) => [...prev, `SYSTEM: File sent successfully. Preparing next file: ${nextFile.name} (${nextIdx + 1}/${selectedFilesRef.current.length})`]);
-                 
-                 if (controlConnRef.current.length > 0 && connectedRef.current) {
-                   controlConnRef.current.forEach(c => {
-                     if (c.readyState === 'open') {
-                       c.send(JSON.stringify({
-                         type: "FILE_META",
-                         file: {
-                           name: nextFile.name,
-                           type: nextFile.type,
-                           size: nextFile.size,
-                           totalChunks: Math.ceil(nextFile.size / CHUNK_SIZE),
-                           chunkSize: CHUNK_SIZE
-                         }
-                       }));
-                     }
-                   });
-                 }
-               } else {
-                 setMessages((prev) => [...prev, `SYSTEM: All ${selectedFilesRef.current.length} file(s) sent successfully!`]);
-                 setSelectedFiles([]);
-                 selectedFilesRef.current = [];
-                 setCurrentFileIndex(0);
-                 currentFileIndexRef.current = 0;
-                 if (fileInputRef.current) fileInputRef.current.value = '';
-                 
-                 if (controlConnRef.current.length > 0 && connectedRef.current) {
-                   controlConnRef.current.forEach(c => {
-                     if (c.readyState === 'open') {
-                       c.send(JSON.stringify({ type: "ALL_FILES_DONE" }));
-                     }
-                   });
-                 }
-                 
-                 if (socketRef.current) {
-                   console.log("CONSOLE: All files sent. Emitting 'dropped' to unlock room.");
-                   socketRef.current.emit("dropped", roomCodeRef.current);
-                 }
-               }
-             } else if (payload.type === "ALL_FILES_DONE") {
-               console.log("CONSOLE: Received ALL_FILES_DONE from peer");
-               setMessages((prev) => [...prev, `SYSTEM: All files have been received.`]);
-               transferRequestedRef.current = false;
-             } else if (payload.type === "PING") {
-               dc.send(JSON.stringify({ type: "PONG" }));
-             } else if (payload.type === "PONG") {
-               setMessages(prev => [...prev, "SYSTEM: P2P Connection verified!"]);
-             }
-           } else {
-             const message = String(data);
-             setMessages((prev) => [...prev, `Peer: ${message}`]);
-           }
-        };
-     } else {
-        dc.onmessage = async (e) => {
-           const data = e.data;
-           const isBinary = data instanceof ArrayBuffer ||
-             (typeof Blob !== 'undefined' && data instanceof Blob) ||
-             (data && (data as any).buffer instanceof ArrayBuffer);
-
-           if (isBinary) {
-             let buffer: ArrayBuffer;
-             if (data instanceof ArrayBuffer) {
-               buffer = data;
-             } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
-               buffer = await data.arrayBuffer();
-             } else {
-               buffer = (data as any).buffer;
-             }
-
-             if (buffer.byteLength > HEADER_SIZE) {
-               transferEngineRef.current?.enqueueChunk(buffer);
-             }
-           }
-        };
-     }
-  }, []);
-
-  const createTransferEngine = useCallback((conns: RTCDataChannel[]) => {
-    if (transferEngineRef.current) {
-      transferEngineRef.current.destroy();
-      transferEngineRef.current = null;
-    }
-    const engine = new TransferEngine(conns);
-    engine.setControlConnections(controlConnRef.current);
-    transferEngineRef.current = engine;
-    engine.setCallbacks(
-      (t) => {
-        setTelemetry(t);
-        setTransferProgress(t.progress);
-      },
-      (blob) => {
-        if (blob instanceof Blob) {
-           handleEngineComplete(blob);
-        } else if (blob === null) {
-           handleEngineComplete(null);
-        } else {
-           console.log("CONSOLE: Sender finished transfer. Waiting for receiver to acknowledge.");
-        }
+      } else {
+        console.log(`DataChannel ${dc.label} open. Waiting for remaining channels... (data: ${connRef.current.filter(c=>c.readyState==='open').length}/${connRef.current.length}, ctrl: ${controlConnRef.current.filter(c=>c.readyState==='open').length}/${controlConnRef.current.length})`);
       }
-    );
-    return engine;
-  }, []);
+    };
 
-  const setupEngineConnections = useCallback((dataConns: RTCDataChannel[], controlConns: RTCDataChannel[]) => {
-    createTransferEngine(dataConns);
-    
-    for (const conn of dataConns) {
-      if (conn.readyState === 'open') setConnected(true);
-    }
-    for (const conn of controlConns) {
-      if (conn.readyState === 'open') setConnected(true);
+    dc.onopen = handleOpen;
+    // BUG 6 FIX: if channel already open before handler registered (LAN race),
+    // call handleOpen via queueMicrotask so all ondatachannel push() calls complete first.
+    if (dc.readyState === 'open') {
+      console.log(`[LAN-fix] DataChannel ${dc.label} was already open — deferring handleOpen() via microtask`);
+      queueMicrotask(handleOpen);
     }
 
-    const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
-    if (isSourceRef.current && currentFile) {
-      console.log("CONSOLE: Resending FILE_META on re-setup");
-      const metaPayload = JSON.stringify({
-        type: "FILE_META",
-        file: {
-          name: currentFile.name,
-          type: currentFile.type,
-          size: currentFile.size,
-          totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
-          chunkSize: CHUNK_SIZE
-        }
-      });
-      controlConns.forEach(c => {
-        if (c.readyState === 'open') {
-          c.send(metaPayload);
-        }
-      });
-    }
-    
-    if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current) {
-      const engine = transferEngineRef.current;
-      if (engine) {
-        const resumeManifest = engine.getReceivedManifest();
-        console.log(`CONSOLE: Sending START_TRANSFER with ${resumeManifest.length} already-received chunks`);
-        transferRequestedRef.current = true;
-        isTransferringRef.current = true;
-        setIsTransferring(true);
-        controlConns.forEach(c => {
-          if (c.readyState === 'open') {
-            c.send(JSON.stringify({
-              type: "START_TRANSFER",
-              resumeManifest
-            }));
+    dc.onclose = () => {
+      console.log(`DataChannel ${dc.label} closed`);
+      if (dc.label === 'control') {
+        controlConnRef.current = controlConnRef.current.filter(c => c !== dc);
+      } else {
+        connRef.current = connRef.current.filter(c => c !== dc);
+      }
+      if (connRef.current.length === 0 && controlConnRef.current.length === 0) {
+        setConnected(false);
+        transferEngineRef.current?.destroy();
+        transferEngineRef.current = null;
+      }
+    };
+
+    dc.onerror = (err) => {
+      console.error(`DataChannel ${dc.label} error:`, err);
+    };
+
+    if (dc.label === 'control') {
+      dc.onmessage = async (e) => {
+        const data = e.data;
+        const isBinary = data instanceof ArrayBuffer ||
+          (typeof Blob !== 'undefined' && data instanceof Blob) ||
+          (data && (data as any).buffer instanceof ArrayBuffer);
+
+        if (isBinary) {
+          let buffer: ArrayBuffer;
+          try {
+            if (data instanceof ArrayBuffer) {
+              buffer = data;
+            } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
+              buffer = await data.arrayBuffer();
+            } else if (data && typeof (data as any).buffer === 'object') {
+              // TypedArray: extract the correct slice to avoid SharedArrayBuffer offset issues
+              const raw = data as any;
+              buffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+            } else {
+              console.warn('[Control] Unrecognized binary format, skipping ACK batch');
+              return;
+            }
+          } catch (convErr) {
+            console.error('[Control] Failed to convert incoming ACK data to ArrayBuffer:', convErr);
+            return;
           }
-        });
-      }
+
+          if (buffer.byteLength >= 5 && buffer.byteLength % 5 === 0) {
+            const view = new DataView(buffer);
+            const messageCount = buffer.byteLength / 5;
+            for (let i = 0; i < messageCount; i++) {
+              const type = view.getUint8(i * 5);
+              const index = view.getUint32(i * 5 + 1, true);
+              if (type === 0x02) {
+                transferEngineRef.current?.processAck(index);
+              } else if (type === 0x03) {
+                transferEngineRef.current?.processNack(index);
+              }
+            }
+            return;
+          }
+          return;
+        }
+
+        let payload = data;
+        if (typeof data === 'string') {
+          try { payload = JSON.parse(data); } catch (err) { payload = data; }
+        }
+
+        if (payload && typeof payload === 'object') {
+          if (payload.type === "FILE_META") {
+            console.log("CONSOLE: Received FILE_META:", payload.file);
+            incomingFileRef.current = payload.file;
+            setIncomingFile(payload.file);
+
+            const prevEngine = transferEngineRef.current;
+            if (prevEngine) {
+              // BUG 14 FIX: Use cleanup() — not the non-existent destroy() method
+              prevEngine.cleanup();
+              transferEngineRef.current = null;
+            }
+
+            const newEngine = new TransferEngine(connRef.current);
+            newEngine.setControlConnections(controlConnRef.current);
+            transferEngineRef.current = newEngine;
+            newEngine.setCallbacks(
+              (t) => { setTelemetry(t); setTransferProgress(t.progress); },
+              (blob) => {
+                if (blob instanceof Blob) handleEngineComplete(blob);
+                else if (blob === null) handleEngineComplete(null);
+                else console.log("CONSOLE: Sender finished. Waiting for TRANSFER_COMPLETE.");
+              }
+            );
+            newEngine.initReceiver(payload.file);
+
+            // Save location is chosen in handleDropAction (button) or falls through to
+            // OPFS (gesture path). Do not call showSaveFilePicker here — FILE_META
+            // arrives via WebRTC message, which is not a browser user-gesture context.
+
+            if (saveDirectoryHandleRef.current) {
+              try {
+                const fh = await saveDirectoryHandleRef.current.getFileHandle(
+                  payload.file.name, { create: true }
+                );
+                const wr = await fh.createWritable();
+                if (payload.file.size > 0) {
+                  await (wr as any).truncate(payload.file.size);
+                }
+                newEngine.setStreamWriter(wr);
+                console.log(`[Stream] Ready → streaming "${payload.file.name}" to folder`);
+              } catch (streamErr) {
+                console.warn('[Stream] Failed to open file for streaming:', streamErr);
+              }
+            } else if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
+              try {
+                // OPFS Fallback for Mobile Devices (Zero-RAM streaming)
+                const root = await navigator.storage.getDirectory();
+                const fh = await root.getFileHandle(payload.file.name, { create: true });
+                // CRITICAL: set the ref BEFORE createWritable() so cancelTransfer() can
+                // find and delete the OPFS file even if cancel happens during async setup.
+                opfsFileHandleRef.current = fh;
+                if ('createWritable' in fh) {
+                  const wr = await (fh as any).createWritable();
+                  if (payload.file.size > 0) {
+                    await wr.truncate(payload.file.size);
+                  }
+                  newEngine.setStreamWriter(wr);
+                  console.log(`[Stream] Ready → streaming "${payload.file.name}" to OPFS virtual disk`);
+                }
+              } catch (opfsErr) {
+                opfsFileHandleRef.current = null; // failed to set up, clear the ref
+                console.warn('[Stream] Failed to initialize OPFS fallback. Will use RAM buffer:', opfsErr);
+              }
+            }
+
+            if (transferRequestedRef.current && isGlobalLockedRef.current && !isSourceRef.current) {
+              console.log("CONSOLE: Auto-accepting next file in multi-file transfer");
+              isTransferringRef.current = true;
+              setIsTransferring(true);
+              controlConnRef.current.forEach(c => {
+                if (c.readyState === 'open') {
+                  c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest: [] }));
+                }
+              });
+              setMessages((prev) => [...prev, `SYSTEM: Auto-downloading next file: ${payload.file.name}`]);
+            } else {
+              transferRequestedRef.current = false;
+              setMessages((prev) => [...prev, `SYSTEM: Incoming file ready: ${payload.file.name}. Perform DROP gesture to download.`]);
+            }
+
+          } else if (payload.type === "START_TRANSFER") {
+            console.log("CONSOLE: Received START_TRANSFER from peer. Executing transfer.");
+            setMessages(prev => [...prev, "SYSTEM: Received START_TRANSFER from peer. Checking files..."]);
+            const fileToSend = selectedFilesRef.current[currentFileIndexRef.current];
+            if (fileToSend) {
+              executeTransfer(fileToSend, payload.resumeManifest || []);
+            } else {
+              setMessages(prev => [...prev, "ERROR: Received START_TRANSFER but no file is selected (selectedFiles is empty)."]);
+            }
+
+          } else if (payload.type === "CANCEL_TRANSFER") {
+            console.log("CONSOLE: Received CANCEL_TRANSFER from peer.");
+            if (transferEngineRef.current) {
+              transferEngineRef.current.cancel();
+            }
+    // ── Partial file cleanup (same 3 paths as cancelTransfer) ───────────────
+    if (streamFileHandleRef.current) {
+      const fh = streamFileHandleRef.current;
+      streamFileHandleRef.current = null;
+      if (typeof fh.remove === 'function') { fh.remove().catch(() => {}); }
     }
-  }, [createTransferEngine]);
+    if (saveDirectoryHandleRef.current && incomingFileRef.current?.name) {
+      saveDirectoryHandleRef.current.removeEntry(incomingFileRef.current.name).catch(() => {});
+    }
+    if (opfsFileHandleRef.current) {
+      const nameToDelete = incomingFileRef.current?.name;
+      if (nameToDelete && navigator.storage?.getDirectory) {
+        navigator.storage.getDirectory().then(root => {
+          root.removeEntry(nameToDelete).catch(() => {});
+        }).catch(() => {});
+      }
+      opfsFileHandleRef.current = null;
+    }
+    // ────────────────────────────────────────────────────────────────────────
+            setIncomingFile(null);
+            incomingFileRef.current = null;
+            fileChunksRef.current = [];
+            setTransferProgress(0);
+            transferRequestedRef.current = false;
+            isTransferringFastRef.current = false;
+            isTransferringRef.current = false;
+            setIsTransferring(false);
+            setSelectedFiles([]);
+            selectedFilesRef.current = [];
+            setCurrentFileIndex(0);
+            currentFileIndexRef.current = 0;
+            setTelemetry(null);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            setMessages((prev) => [...prev, `SYSTEM: Peer cancelled the transfer.`]);
+
+
+          } else if (payload.type === "TRANSFER_COMPLETE") {
+            console.log("CONSOLE: Received TRANSFER_COMPLETE from peer");
+            isTransferringRef.current = false;
+            isTransferringFastRef.current = false;
+            setIsTransferring(false);
+            setTelemetry(null);
+            if (transferEngineRef.current) {
+              transferEngineRef.current.resetForNextFile(connRef.current, controlConnRef.current);
+            }
+
+            const nextIdx = currentFileIndexRef.current + 1;
+            if (nextIdx < selectedFilesRef.current.length) {
+              setCurrentFileIndex(nextIdx);
+              currentFileIndexRef.current = nextIdx;
+              const nextFile = selectedFilesRef.current[nextIdx];
+              setMessages((prev) => [...prev, `SYSTEM: File sent successfully. Preparing next file: ${nextFile.name} (${nextIdx + 1}/${selectedFilesRef.current.length})`]);
+
+              // BUG 12 FIX: readyState direct check
+              controlConnRef.current.filter(c => c.readyState === 'open').forEach(c => {
+                c.send(JSON.stringify({
+                  type: "FILE_META",
+                  file: {
+                    name: nextFile.name,
+                    type: nextFile.type,
+                    size: nextFile.size,
+                    totalChunks: Math.ceil(nextFile.size / CHUNK_SIZE),
+                    chunkSize: CHUNK_SIZE
+                  }
+                }));
+              });
+            } else {
+              setMessages((prev) => [...prev, `SYSTEM: All ${selectedFilesRef.current.length} file(s) sent successfully!`]);
+              setSelectedFiles([]);
+              selectedFilesRef.current = [];
+              setCurrentFileIndex(0);
+              currentFileIndexRef.current = 0;
+              if (fileInputRef.current) fileInputRef.current.value = '';
+
+              controlConnRef.current.filter(c => c.readyState === 'open')
+                .forEach(c => c.send(JSON.stringify({ type: "ALL_FILES_DONE" })));
+
+              if (socketRef.current) {
+                console.log("CONSOLE: All files sent. Emitting 'dropped' to unlock room.");
+                socketRef.current.emit("dropped", roomCodeRef.current);
+              }
+            }
+
+          } else if (payload.type === "ALL_FILES_DONE") {
+            console.log("CONSOLE: Received ALL_FILES_DONE from peer");
+            setMessages((prev) => [...prev, `SYSTEM: All files have been received.`]);
+            transferRequestedRef.current = false;
+
+          } else if (payload.type === "PING") {
+            dc.send(JSON.stringify({ type: "PONG" }));
+
+          } else if (payload.type === "PONG") {
+            setMessages(prev => [...prev, "SYSTEM: P2P Connection verified!"]);
+          }
+
+        } else {
+          const message = String(data);
+          setMessages((prev) => [...prev, `Peer: ${message}`]);
+        }
+      };
+    } else {
+      dc.onmessage = async (e) => {
+        const data = e.data;
+        const isBinary = data instanceof ArrayBuffer ||
+          (typeof Blob !== 'undefined' && data instanceof Blob) ||
+          (data && (data as any).buffer instanceof ArrayBuffer);
+
+        if (isBinary) {
+          let buffer: ArrayBuffer;
+          if (data instanceof ArrayBuffer) {
+            buffer = data;
+          } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
+            buffer = await data.arrayBuffer();
+          } else {
+            buffer = (data as any).buffer;
+          }
+
+          // BUG 5 FIX: >= HEADER_SIZE (not > HEADER_SIZE), to accept zero-payload packets
+          if (buffer.byteLength >= HEADER_SIZE) {
+            transferEngineRef.current?.enqueueChunk(buffer);
+          }
+        }
+      };
+    }
+  }, []);
 
   const setupOfferer = useCallback(async () => {
     const pc = createPeerConnection();
-    
-    // We expect 3 data channels (data0, data1, data2) + 1 control channel.
-    const DATA_CHANNEL_COUNT = 3;
+
+    const DATA_CHANNEL_COUNT = 1;
     const dataConnsRaw: RTCDataChannel[] = [];
     const controlConnsRaw: RTCDataChannel[] = [];
 
-    for (let i=0; i<DATA_CHANNEL_COUNT; i++) {
-        const dc = pc.createDataChannel(`data${i}`, { ordered: false });
-        dataConnsRaw.push(dc);
-        setupDataChannel(dc);
+    for (let i = 0; i < DATA_CHANNEL_COUNT; i++) {
+      const dc = pc.createDataChannel(`data${i}`, { ordered: true });
+      // BUG 15 FIX: push to ref BEFORE calling setupDataChannel
+      dataConnsRaw.push(dc);
     }
     const controlDc = pc.createDataChannel('control', { ordered: true });
+    // BUG 15 FIX: push to ref BEFORE calling setupDataChannel
     controlConnsRaw.push(controlDc);
-    setupDataChannel(controlDc);
 
+    // Assign all refs before setup so handleOpen sees complete arrays
     connRef.current = dataConnsRaw;
     controlConnRef.current = controlConnsRaw;
 
+    // Now call setupDataChannel for each
+    for (const dc of dataConnsRaw) {
+      setupDataChannel(dc);
+    }
+    setupDataChannel(controlDc);
+
+    // onnegotiationneeded: fires when pc.restartIce() is called after a disconnect.
+    // The offerer must re-send an updated offer with iceRestart=true for the restart to work.
+    pc.onnegotiationneeded = async () => {
+      // Only re-negotiate when stable (ignore spurious fires during initial setup)
+      if (pc.signalingState !== 'stable') {
+        console.log('[WebRTC] onnegotiationneeded fired but signalingState is', pc.signalingState, '— ignoring');
+        return;
+      }
+      // Ignore the very first negotiation (initial offer is sent below)
+      if (!connectedRef.current && pc.iceConnectionState === 'new') return;
+      console.log('[WebRTC] onnegotiationneeded — sending ICE restart offer');
+      try {
+        const offer = await pc.createOffer({ iceRestart: true });
+        await pc.setLocalDescription(offer);
+        socketRef.current?.emit("offer", { roomId: roomCodeRef.current, sdp: offer });
+      } catch (e) {
+        console.error('[WebRTC] Failed to create ICE restart offer:', e);
+      }
+    };
+
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    
     socketRef.current?.emit("offer", { roomId: roomCodeRef.current, sdp: offer });
   }, [createPeerConnection, setupDataChannel]);
 
@@ -1123,20 +1521,37 @@ export default function App() {
     const pc = createPeerConnection();
 
     pc.ondatachannel = (event) => {
-        const dc = event.channel;
-        if (dc.label === 'control') {
-           controlConnRef.current.push(dc);
-        } else if (dc.label.startsWith('data')) {
-           connRef.current.push(dc);
-        }
-        setupDataChannel(dc);
+      const dc = event.channel;
+      // BUG 15 FIX: push to ref BEFORE calling setupDataChannel so handleOpen
+      // sees all channels already in the array
+      if (dc.label === 'control') {
+        controlConnRef.current.push(dc);
+      } else if (dc.label.startsWith('data')) {
+        connRef.current.push(dc);
+      }
+      setupDataChannel(dc);
     };
   }, [createPeerConnection, setupDataChannel]);
 
-  const handleJoin = () => {
+  const handleJoin = async () => {
     if (roomCode.length === 4 && socketRef.current) {
-       console.log("Joining room:", roomCode);
-       socketRef.current.emit("join-room", roomCode);
+      console.log("Joining room:", roomCode);
+      socketRef.current.emit("join-room", roomCode);
+
+      if (backgroundAudioRef.current) {
+        try {
+          await backgroundAudioRef.current.play();
+          console.log("[BackgroundMode] Silent audio playing, connection will stay alive in background.");
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.metadata = new MediaMetadata({
+              title: 'Nexus Spatial Share',
+              artist: 'Background Connection Active',
+            });
+          }
+        } catch (e) {
+          console.warn("[BackgroundMode] Could not play silent audio:", e);
+        }
+      }
     }
   };
 
@@ -1158,360 +1573,159 @@ export default function App() {
     }
   };
 
-  const simulateGrab = () => {
-    socketRef.current?.emit("grabbed", roomCodeRef.current);
+  const simulateGrab = () => { socketRef.current?.emit("grabbed", roomCodeRef.current); };
+  const simulateDrop = () => { socketRef.current?.emit("dropped", roomCodeRef.current); };
+
+  const dumpDiagnostics = () => {
+    const dataChannelStates = connRef.current.map(c => `${c.label}:${c.readyState}`);
+    const ctrlChannelStates = controlConnRef.current.map(c => `${c.label}:${c.readyState}`);
+    const lines = [
+      `=== DIAGNOSTICS ==========================`,
+      `Socket: ${isSocketConnected ? 'connected' : 'DISCONNECTED'} | ID: ${socketRef.current?.id ?? 'none'}`,
+      `Room: "${roomCodeRef.current}" | Joined: ${joinedRef.current} | P2P Connected: ${connected}`,
+      `Data channels (${connRef.current.length}): ${dataChannelStates.join(', ') || 'none'}`,
+      `Ctrl channels (${controlConnRef.current.length}): ${ctrlChannelStates.join(', ') || 'none'}`,
+      `isGlobalLocked: ${isGlobalLocked} | isSource: ${isSource}`,
+      `incomingFile: ${incomingFileRef.current ? incomingFileRef.current.name : 'null'}`,
+      `selectedFiles: ${selectedFilesRef.current.length} | currentIdx: ${currentFileIndexRef.current}`,
+      `isTransferring: ${isTransferringRef.current} | transferRequested: ${transferRequestedRef.current}`,
+      `==========================================`,
+    ];
+    lines.forEach(l => console.log('DIAG:', l));
+    setMessages(prev => [...prev, ...lines]);
   };
 
-  const simulateDrop = () => {
-    socketRef.current?.emit("dropped", roomCodeRef.current);
-  };
+  // --- PHASE 4 BRIDGE HOOKS ---
+  useEffect(() => {
+    if (isSocketConnected) (window as any).Signaling?.onConnect();
+    else (window as any).Signaling?.onDisconnect();
+  }, [isSocketConnected]);
+
+  useEffect(() => {
+    if (joined && roomCode) {
+      (window as any).Signaling?.setRoomCode(roomCode);
+      (window as any).transitionToSender?.(roomCode);
+    }
+  }, [joined, roomCode]);
+
+  useEffect(() => {
+    if (connected) (window as any).Signaling?.onPeerJoined('peer');
+  }, [connected]);
+
+  useEffect(() => {
+    if (connected) (window as any).Signaling?.onWebRTCOpen();
+    else (window as any).Signaling?.onWebRTCClose();
+  }, [connected]);
+
+  useEffect(() => {
+    const hasFiles = selectedFiles.length > 0;
+    (window as any).updateGrabButtonState?.(hasFiles, isGlobalLocked, isSource);
+    (window as any).updateDropButtonState?.(!!incomingFile, isGlobalLocked, isSource, isGrabbedPermanent);
+  }, [selectedFiles, isGlobalLocked, isSource, incomingFile, isGrabbedPermanent]);
+
+  useEffect(() => {
+    if (isTransferring && isSource) {
+      (window as any).ParticleSystem?.startTransfer(
+        () => transferProgress,
+        () => telemetry?.speedMBps ?? 0
+      );
+    }
+    if (isTransferring && !isSource) {
+        (window as any).updateReceiverProgress?.(transferProgress, telemetry?.speedMBps ?? 0);
+    }
+  }, [isTransferring, isSource, transferProgress, telemetry]);
+
+  useEffect(() => {
+    if (cameraError) (window as any).showCameraDeniedBanner?.();
+  }, [cameraError]);
+
+  useEffect(() => {
+    // ── Expose socket hooks for Ch2/Ch3 native scripts ──
+    // Ch2's joinRoom() checks _socketIsConnected and _socketJoinRoom before
+    // falling back to the role-picker UI. Exposing these ensures Ch2/Ch3 route
+    // through the real socket instead of showing the dev role picker.
+    (window as any)._socketIsConnected = () => !!socketRef.current?.connected;
+
+    (window as any)._socketJoinRoom = (code: string) => {
+      setRoomCode(code);
+      socketRef.current?.emit('join-room', code);
+    };
+
+    (window as any)._socketCreateRoom = (code: string) => {
+      setRoomCode(code);
+      socketRef.current?.emit('join-room', code);
+    };
+
+    // ── file-input: sync React state so App.tsx knows which files to send ──
+    (window as any).onFilesSelected = (files: File[]) => {
+      setSelectedFiles(files);
+      selectedFilesRef.current = files;
+    };
+    (window as any).sendFilesViaWebRTC = (files: File[]) => {
+      // Stub to prevent index.html from starting fake transfer
+      console.log("[App.tsx] sendFilesViaWebRTC called (intercepted by App.tsx)");
+    };
+
+    // ── btn-grab: trigger real WebRTC grab in App.tsx logic ──
+    document.getElementById('btn-grab')?.addEventListener('click', () => {
+      handleGrabAction();
+      socketRef.current?.emit('grabbed', roomCodeRef.current);
+    });
+
+    // ── btn-drop: trigger real WebRTC drop in App.tsx logic ──
+    document.getElementById('btn-drop')?.addEventListener('click', () => {
+      handleDropAction();
+    });
+
+    document.getElementById('btn-cancel')?.addEventListener('click', cancelTransfer);
+
+    document.getElementById('btn-leave')?.addEventListener('click', () => {
+      socketRef.current?.emit('dropped', roomCodeRef.current);
+      socketRef.current?.emit('leave-room');
+      setJoined(false);
+      setConnected(false);
+      setSelectedFiles([]);
+      setRoomCode('');
+      (window as any).leaveRoom?.();
+    });
+
+    document.getElementById('btn-download-main')?.addEventListener('click', () => {
+      // patched by HTML logic when file received
+    });
+
+    document.getElementById('btn-rx-leave')?.addEventListener('click', () => {
+      (window as any).leaveReceiver?.();
+    });
+
+    document.getElementById('btn-error-retry')?.addEventListener('click', () => {
+      cancelTransfer();
+    });
+
+    (window as any)._completeTransferCh3 = () => {
+      // Success screen is handled by Ch3
+    };
+
+    (window as any)._socketLeaveRoom = () => {
+      socketRef.current?.emit('leave-room');
+      setJoined(false);
+      setConnected(false);
+      setSelectedFiles([]);
+      setRoomCode('');
+    };
+
+    (window as any)._socketCancelTransfer = () => {
+      cancelTransfer();
+    };
+
+
+  }, []);
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-blue-500/30">
-      {/* Header */}
-      <header className="border-b border-white/10 p-6 flex justify-between items-center bg-black/50 backdrop-blur-xl sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
-            <Send className="w-5 h-5 text-white" />
-          </div>
-          <h1 className="text-xl font-bold tracking-tight">Nexus <span className="text-blue-500">Spatial</span></h1>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className={cn(
-            "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-all",
-            connected ? "bg-green-500/10 border-green-500/20 text-green-400" : "bg-yellow-500/10 border-yellow-500/20 text-yellow-400"
-          )}>
-            <div className={cn("w-2 h-2 rounded-full animate-pulse", connected ? "bg-green-400" : "bg-yellow-400")} />
-            {connected ? "P2P Connected" : joined ? "Waiting for Peer..." : "Not Connected"}
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-4xl mx-auto p-8 space-y-8">
-        {!joined ? (
-          <div className="max-w-md mx-auto mt-20 space-y-8 text-center animate-in fade-in slide-in-from-bottom-4 duration-700">
-            <div className="space-y-2">
-              <h2 className="text-4xl font-bold tracking-tight">Connect Devices</h2>
-              <p className="text-white/50">Enter a 4-digit code to pair your phone and laptop.</p>
-            </div>
-            
-            <div className="bg-white/5 p-8 rounded-3xl border border-white/10 shadow-2xl space-y-6">
-              <div className="flex justify-center gap-4">
-                {[1, 2, 3, 4].map((i) => (
-                  <div key={i} className="w-12 h-16 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center text-2xl font-mono">
-                    {roomCode[i-1] || ""}
-                  </div>
-                ))}
-              </div>
-              
-              <input
-                type="text"
-                maxLength={4}
-                placeholder="Enter 4-digit code"
-                className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-center text-xl font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.replace(/[^0-9]/g, ""))}
-              />
-              
-              <button
-                onClick={handleJoin}
-                disabled={roomCode.length !== 4}
-                className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:hover:bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-blue-600/30 transition-all active:scale-[0.98]"
-              >
-                Join Room
-              </button>
-              
-              <p className="text-white/30 text-[10px] uppercase tracking-widest font-bold pt-4">
-                Note: Camera access is required for gesture recognition.
-              </p>
-            </div>
-
-            <div className="flex justify-center gap-12 text-white/30 pt-8">
-              <div className="flex flex-col items-center gap-2">
-                <Smartphone className="w-8 h-8" />
-                <span className="text-[10px] uppercase tracking-widest font-bold">Mobile</span>
-              </div>
-              <div className="w-px h-12 bg-white/10" />
-              <div className="flex flex-col items-center gap-2">
-                <Laptop className="w-8 h-8" />
-                <span className="text-[10px] uppercase tracking-widest font-bold">Desktop</span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-in fade-in duration-700">
-            {/* Camera / Gesture Preview */}
-            <div className="space-y-4">
-              <div className="relative aspect-video bg-white/5 rounded-3xl border border-white/10 overflow-hidden group">
-                {cameraError ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-red-500/10 backdrop-blur-sm">
-                    <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
-                    <p className="text-sm font-medium text-red-400 mb-6">{cameraError}</p>
-                    <button 
-                      onClick={startCamera}
-                      className="bg-white/10 hover:bg-white/20 px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all"
-                    >
-                      Retry Camera
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <video 
-                      ref={videoRef} 
-                      className="hidden" 
-                      playsInline 
-                      muted 
-                    />
-                    <canvas 
-                      ref={canvasRef} 
-                      className="w-full h-full object-cover"
-                      width={640}
-                      height={360}
-                    />
-                  </>
-                )}
-                
-                {/* Grab Overlay Effect */}
-                <div className={cn(
-                  "absolute inset-0 bg-blue-600/20 backdrop-blur-sm transition-opacity duration-500 flex items-center justify-center opacity-0 pointer-events-none",
-                  isGrabbed && "opacity-100"
-                )}>
-                  <div className="w-32 h-32 border-4 border-blue-400 rounded-full animate-ping" />
-                  <span className="absolute font-black text-4xl tracking-tighter uppercase italic text-blue-400">Grabbed!</span>
-                </div>
-
-                {/* Drop Overlay Effect */}
-                <div className={cn(
-                  "absolute inset-0 bg-emerald-600/20 backdrop-blur-sm transition-opacity duration-500 flex items-center justify-center opacity-0 pointer-events-none",
-                  isDropped && "opacity-100"
-                )}>
-                  <div className="w-32 h-32 border-4 border-emerald-400 rounded-full animate-ping" />
-                  <span className="absolute font-black text-4xl tracking-tighter uppercase italic text-emerald-400">Dropped!</span>
-                </div>
-
-                {/* Carrying Indicator */}
-                {isGlobalLocked && !isSource && (
-                  <div className="absolute top-6 right-6 bg-blue-600 px-4 py-2 rounded-full flex items-center gap-2 animate-bounce shadow-lg shadow-blue-600/40 border border-blue-400/50">
-                    <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                    <span className="text-[10px] font-black uppercase tracking-widest">
-                      {incomingFile ? `Target: Dropping ${incomingFile.name} (${transferProgress}%)` : "Target: Open Palm to Drop"}
-                    </span>
-                  </div>
-                )}
-
-                {isGlobalLocked && isSource && (
-                  <div className="absolute top-6 left-6 bg-amber-600 px-4 py-2 rounded-full flex items-center gap-2 shadow-lg shadow-amber-600/40 border border-amber-400/50">
-                    <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                    <span className="text-[10px] font-black uppercase tracking-widest">
-                      {isTransferring ? `Source: Sending File (${transferProgress}%)` : "Source: Data Sent"}
-                    </span>
-                  </div>
-                )}
-
-                {telemetry && (isTransferring || incomingFile) && (
-                  <div className="absolute bottom-6 left-6 right-6 bg-black/60 backdrop-blur-md border border-white/10 rounded-xl p-4 text-xs font-mono text-white/80 shadow-2xl flex flex-col gap-3">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>Speed: <span className="text-emerald-400">{telemetry.speedMBps.toFixed(2)} MB/s</span></div>
-                      <div>ETA: <span className="text-blue-400">{Math.round(telemetry.etaSeconds)}s</span></div>
-                      <div>Chunks: <span className="text-amber-400">{telemetry.chunksSent} / {telemetry.totalChunks}</span></div>
-                      <div>Retransmits: <span className="text-red-400">{telemetry.retransmits}</span></div>
-                      <div>In-Flight: <span className="text-purple-400">{telemetry.inFlight}</span></div>
-                      <div>Progress: <span className="text-white">{telemetry.progress}%</span></div>
-                      <div>Window: <span className="text-cyan-400">{telemetry.windowSize} chunks</span></div>
-                    </div>
-                    {/* Progress Bar */}
-                    <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-emerald-500 transition-all duration-300 ease-out"
-                        style={{ width: `${telemetry.progress}%` }}
-                      />
-                    </div>
-                    
-                    {/* Cancel Button */}
-                    <button 
-                      onClick={cancelTransfer}
-                      className="mt-1 w-full py-2 bg-red-500/20 hover:bg-red-500/40 text-red-200 rounded-lg transition-colors font-bold tracking-wider text-xs uppercase border border-red-500/30"
-                    >
-                      Cancel Transfer
-                    </button>
-                  </div>
-                )}
-              </div>
-              
-              <div className="flex gap-4">
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  className="hidden"
-                  multiple
-                  onChange={(e) => {
-                    const files = e.target.files;
-                    if (files && files.length > 0) {
-                      setSelectedFiles(Array.from(files));
-                      setCurrentFileIndex(0);
-                      currentFileIndexRef.current = 0;
-                    }
-                  }}
-                />
-                <button 
-                  onClick={() => fileInputRef.current?.click()}
-                  className={cn(
-                    "flex-1 bg-white/5 hover:bg-white/10 border border-white/10 py-4 rounded-2xl font-bold transition-all flex items-center justify-center gap-2",
-                    selectedFiles.length > 0 && "border-blue-500/50 bg-blue-500/5"
-                  )}
-                >
-                  <Upload className="w-4 h-4" />
-                  {selectedFiles.length > 1 
-                    ? `${selectedFiles.length} files selected` 
-                    : selectedFiles.length === 1 
-                      ? selectedFiles[0].name 
-                      : "Select File(s)"}
-                </button>
-                <button 
-                  onClick={() => {
-                    if (selectedFiles.length > 0) {
-                      // NOTE: Do NOT call simulateDrop() here — that emits 'dropped' to the socket
-                      // and triggers global-unlock which wipes state before transfer starts.
-                      // simulateGrab() is correct here: it locks the room.
-                      simulateGrab();
-                      handleGrabAction();
-                    }
-                  }}
-                  disabled={selectedFiles.length === 0 || isGlobalLocked}
-                  className="flex-1 bg-white/5 hover:bg-white/10 disabled:opacity-30 border border-white/10 py-4 rounded-2xl font-bold transition-all active:scale-95"
-                >
-                  Simulate Grab
-                </button>
-                <button 
-                  onClick={() => {
-                    if (isGlobalLocked && !isSource) {
-                      // Do NOT call simulateDrop() — that unlocks the room immediately.
-                      // Only the sender unlocks after all files are transferred.
-                      handleDropAction();
-                    }
-                  }}
-                  disabled={!isGlobalLocked || isSource}
-                  className="flex-1 bg-white/5 hover:bg-white/10 disabled:opacity-30 border border-white/10 py-4 rounded-2xl font-bold transition-all active:scale-95"
-                >
-                  Simulate Drop
-                </button>
-              </div>
-
-              {/* Received Files Section */}
-              {receivedFiles.length > 0 && (
-                <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-3xl p-6 space-y-4 animate-in fade-in slide-in-from-top-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
-                      <Download className="w-4 h-4" />
-                      Received Files
-                    </h3>
-                    <span className="text-[10px] font-mono text-emerald-500/50">{receivedFiles.length} item(s)</span>
-                  </div>
-                  <div className="space-y-2">
-                    {receivedFiles.map((file) => (
-                      <div key={file.id} className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center justify-between group">
-                        <div className="flex items-center gap-3 overflow-hidden">
-                          <div className="w-8 h-8 bg-emerald-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
-                            <FileIcon className="w-4 h-4 text-emerald-400" />
-                          </div>
-                          <span className="text-sm font-medium truncate text-white/80">{file.name}</span>
-                        </div>
-                        <button
-                          onClick={() => {
-                            const url = URL.createObjectURL(file.blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = file.name;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
-                          }}
-                          className="bg-emerald-500 hover:bg-emerald-400 text-black p-2 rounded-lg transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
-                        >
-                          <Download className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Test Console */}
-            <div className="bg-white/5 rounded-3xl border border-white/10 flex flex-col h-[400px]">
-              <div className="p-4 border-b border-white/10 flex justify-between items-center">
-                <h3 className="text-xs font-bold uppercase tracking-widest text-white/50">P2P Console</h3>
-                <div className="flex gap-4">
-                  <button 
-                    onClick={testP2P}
-                    disabled={!connected}
-                    className="text-[10px] uppercase tracking-widest font-bold text-blue-400 hover:text-blue-300 disabled:opacity-30 transition-colors"
-                  >
-                    Test Connection
-                  </button>
-                  <button 
-                    onClick={() => setMessages([])}
-                    className="text-[10px] uppercase tracking-widest font-bold text-white/30 hover:text-white/50 transition-colors"
-                  >
-                    Clear Logs
-                  </button>
-                </div>
-              </div>
-              
-              <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-sm">
-                {messages.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-white/10 italic">
-                    No messages yet...
-                  </div>
-                ) : (
-                  messages.map((m, i) => (
-                    <div key={i} className={cn(
-                      "p-2 rounded-lg",
-                      m.startsWith("You:") ? "bg-blue-500/10 text-blue-300 ml-4" : "bg-white/5 text-white/70 mr-4"
-                    )}>
-                      {m}
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="p-4 border-t border-white/10 flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Type test message..."
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-                  value={testMessage}
-                  onChange={(e) => setTestMessage(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && sendTest()}
-                />
-                <button
-                  onClick={sendTest}
-                  disabled={!connected}
-                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-30 p-2 rounded-xl transition-all"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </main>
-
-      {/* Footer Status */}
-      <footer className="fixed bottom-0 left-0 right-0 p-4 flex justify-center pointer-events-none">
-        <div className="bg-black/80 backdrop-blur-xl border border-white/10 px-6 py-2 rounded-full flex items-center gap-6 shadow-2xl">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold">
-            <div className={cn("w-1.5 h-1.5 rounded-full", isSocketConnected ? "bg-green-500" : "bg-red-500")} />
-            <span className={isSocketConnected ? "text-white/70" : "text-red-400"}>Signaling Server</span>
-          </div>
-          <div className="w-px h-4 bg-white/10" />
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold">
-            <div className={cn("w-1.5 h-1.5 rounded-full", connected ? "bg-green-500" : "bg-white/20")} />
-            <span className={connected ? "text-white/70" : "text-white/30"}>WebRTC P2P</span>
-          </div>
-        </div>
-      </footer>
+    <div style={{ display: "none", position: "fixed", top: 0, left: 0, zIndex: -1 }} aria-hidden="true">
+      <video ref={videoRef} playsInline muted style={{ width: 320, height: 240 }} />
+      <canvas ref={canvasRef} width={320} height={240} />
     </div>
   );
 }
+
+
