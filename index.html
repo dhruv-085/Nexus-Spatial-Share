@@ -3308,7 +3308,7 @@
     rxRafId = requestAnimationFrame(step);
   }
 
-  function completeReceive(filename, totalBytes) {
+  function completeReceive(filename, totalBytes, url) {
     if (rxRafId) cancelAnimationFrame(rxRafId);
     document.getElementById('receive-progress').classList.remove('visible');
 
@@ -3320,6 +3320,7 @@
         size: totalBytes,
         icon: getFileIcon(filename),
         timestamp: Date.now(),
+        url: url || null,
       };
       rxFiles.push(fileEntry);
       renderFilesPanel();
@@ -3402,7 +3403,7 @@
     const dlBtn = document.getElementById('btn-download-main');
     dlBtn.onclick = () => { const a=document.createElement('a'); a.href=url; a.download=name; a.click(); };
     // Use existing completeReceive flow but with real data
-    completeReceive(name, size);
+    completeReceive(name, size, url);
   };
 
   // Keep local rxMeta ref for updateReceiverProgress ETA calc
@@ -3480,6 +3481,13 @@
   window.rxDownload = function(idx, btnEl) {
     const btn = btnEl || document.querySelectorAll('.btn-rx-dl')[idx];
     if (!btn) return;
+    const f = rxFiles[idx];
+    if (f && f.url) {
+      const a = document.createElement('a');
+      a.href = f.url;
+      a.download = f.name;
+      a.click();
+    }
     const orig = btn.textContent;
     btn.textContent = '✓';
     btn.style.color = '#22c55e';
@@ -3494,6 +3502,14 @@
   /* Download All stub */
   document.getElementById('btn-dl-all').addEventListener('click', () => {
     if (rxFiles.length === 0) return;
+    rxFiles.forEach(f => {
+      if (f.url) {
+        const a = document.createElement('a');
+        a.href = f.url;
+        a.download = f.name;
+        a.click();
+      }
+    });
     const btn = document.getElementById('btn-dl-all');
     btn.textContent = '✓ Done';
     setTimeout(() => { btn.textContent = 'Download All'; }, 1500);

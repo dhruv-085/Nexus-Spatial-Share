@@ -827,6 +827,9 @@ export default function App() {
         id: Math.random().toString(36).substring(7)
       };
       setReceivedFiles(prev => [newFile, ...prev]);
+
+      const url = URL.createObjectURL(blob);
+      (window as any).onFileReceivedSuccess?.({ name: fileName, size: blob.size, url });
     }
 
     setIncomingFile(null);
@@ -871,6 +874,9 @@ export default function App() {
             id: Math.random().toString(36).substring(7)
           }, ...prev]);
           setMessages(prev => [...prev, `SYSTEM: ✅ Received: "${fileName}" — tap the Download button to save.`]);
+
+          const url = URL.createObjectURL(file);
+          (window as any).onFileReceivedSuccess?.({ name: fileName, size: file.size, url });
         }).catch((err: any) => {
           console.error('Failed to retrieve OPFS file:', err);
           setMessages(prev => [...prev, `ERROR: Failed to read received file "${fileName}": ${err?.message ?? err}`]);
@@ -1699,6 +1705,33 @@ export default function App() {
 
     document.getElementById('btn-error-retry')?.addEventListener('click', () => {
       cancelTransfer();
+    });
+
+    document.getElementById('btn-clear-files')?.addEventListener('click', () => {
+      if (navigator.storage && navigator.storage.getDirectory) {
+        navigator.storage.getDirectory().then(async (root) => {
+          try {
+            // @ts-ignore
+            const entries = root.entries ? root.entries() : null;
+            if (entries) {
+              for await (const [name] of entries) {
+                await root.removeEntry(name, { recursive: true }).catch(() => {});
+              }
+            } else {
+              // @ts-ignore
+              const keys = root.keys ? root.keys() : null;
+              if (keys) {
+                for await (const name of keys) {
+                  await root.removeEntry(name, { recursive: true }).catch(() => {});
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Failed to wipe OPFS directory:', err);
+          }
+        }).catch(() => {});
+      }
+      setReceivedFiles([]);
     });
 
     (window as any)._completeTransferCh3 = () => {
