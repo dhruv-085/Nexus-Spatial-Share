@@ -8,7 +8,7 @@ export interface TransferTelemetry {
   retransmits: number;
   inFlight: number;
   progress: number;
-  windowSize: number;          // current adaptive window (for debugging / display)
+  windowSize: number;
 }
 
 export interface FileMetadata {
@@ -19,19 +19,13 @@ export interface FileMetadata {
   chunkSize: number;
 }
 
-// ─── Tunable Constants ────────────────────────────────────────────────────────
-// 512 KB chunks: fine-grained backpressure, proven 12–22 MB/s on LAN.
-export const CHUNK_SIZE = 2 * 1024 * 1024;              // 2 MB per chunk
-export const HEADER_SIZE = 17;                     // 4(idx)+8(hash)+1(flags)+4(origLen)
-const PREFETCH_BATCH = 20;                         // 40 MB prefetch
-const PACKET_CACHE_MAX = 30;                       // 60 MB RAM cap
-// Backpressure thresholds
-const BACKPRESSURE_LOW_BYTES  = 16 * 1024 * 1024;  // 16 MB — resume pumping
-// ── Adaptive window constants ─────────────────────────────────────────────────────
-const WINDOW_GROW_STEP = 1;                        // chunks to add per growth tick
-const STALE_PAUSE_TIMEOUT_MS = 4000;               // 4s watchdog                        // chunks to add per growth tick
-// ─────────────────────────────────────────────────────────────────────────────
-
+export const CHUNK_SIZE = 128 * 1024;                 // 128 KB per chunk
+export const HEADER_SIZE = 17;                        // 4(idx)+8(hash)+1(flags)+4(origLen)
+const PREFETCH_BATCH = 200;                           // 25.6 MB prefetch
+const PACKET_CACHE_MAX = 500;                         // 64 MB RAM cap
+const BACKPRESSURE_LOW_BYTES  = 1024 * 1024;          // 1 MB — resume pumping
+const WINDOW_GROW_STEP = 1;
+const STALE_PAUSE_TIMEOUT_MS = 2000;
 
 const COMPRESSIBLE_TYPES = new Set([
   'text/plain', 'text/html', 'text/css', 'application/javascript',
@@ -39,16 +33,15 @@ const COMPRESSIBLE_TYPES = new Set([
   'image/x-ms-bmp', 'image/svg+xml'
 ]);
 
-// Pre-built packet cache: index → ready-to-send ArrayBuffer
 type PacketCache = Map<number, ArrayBuffer>;
 
 export class TransferEngine {
-  // ── Sender state ────────────────────────────────────────────────────────────
+  // Sender state
   private file: File | null = null;
-  private connections: any[] = [];
-  private controlConnections: any[] = [];
-  private nextConnIdx = 0;          // round-robin for data channels
-  private nextCtrlIdx = 0;          // round-robin for control channels
+  private connections: RTCDataChannel[] = [];
+  private controlConnections: RTCDataChannel[] = [];
+  private nextConnIdx = 0;
+  private nextCtrlIdx = 0;
   private totalChunks = 0;
   private nextChunkIndex = 0;
   private inFlight = new Set<number>();
@@ -58,90 +51,95 @@ export class TransferEngine {
   private isSending = false;
   private isCanceled = false;
 
-  // Prefetch pipeline: chunks prepared ahead of the send pointer
   private packetCache: PacketCache = new Map();
-  private prefetchInProgress = new Set<number>();   // currently being built
-  private isPumping = false;                         // re-entrancy guard
+  private prefetchInProgress = new Set<number>();
+  private isPumping = false;
+  private isPrefetching = false;
 
-  // Event-driven backpressure
   private backpressurePaused = false;
-  private backpressurePausedSince = 0;            // timestamp when pause began (for stale guard)
-  private backpressureListeners: (() => void)[] = [];
+  private backpressurePausedSince = 0;
 
-  // ── Network Profile ──────────────────────────────────────────────────────────
+  // Network profile
   private networkProfile: 'unknown' | 'lan' | 'wifi' = 'unknown';
   private rttSamples: number[] = [];
-  private rttProbeStartTimes: Map<number, number> = new Map(); // chunkIndex → sendTime
+  private rttProbeStartTimes: Map<number, number> = new Map();
   private static readonly RTT_SAMPLE_COUNT = 5;
-  private static readonly RTT_LAN_THRESHOLD_MS = 2; // avg RTT below this = LAN
+  private static readonly RTT_LAN_THRESHOLD_MS = 5;
 
   private static readonly PROFILE_LAN = {
-    windowFloor: 16,          // 32 MB in-flight floor
-    windowCeiling: 64,        // 128 MB ceiling
-    windowGrowDivisor: 8,     // grow every window/8 ACKs
-    backpressureLowBytes: 16 * 1024 * 1024,   // 16 MB resume threshold
-    backpressureHighCap: 96 * 1024 * 1024,    // 96 MB pause cap
-    useMultiChannel: true,    // round-robin striping ON
-    slowStartThreshold: 32,   // hand off to AIMD at 32 chunks
+    windowFloor: 1024,    // 128 MB static window
+    windowCeiling: 1024,  // 128 MB static window
+    windowGrowDivisor: 2,
+    backpressureLowBytes: 4 * 1024 * 1024,      // 4 MB
+    backpressureHighCap: 12 * 1024 * 1024,      // 12 MB max internal buffer
+    useMultiChannel: true,
+    slowStartThreshold: 512,
   };
 
   private static readonly PROFILE_WIFI = {
-    windowFloor: 8,           // 16 MB floor — less aggressive
-    windowCeiling: 32,        // 64 MB ceiling — prevents radio flooding
-    windowGrowDivisor: 12,    // slower additive increase
-    backpressureLowBytes: 8 * 1024 * 1024,    // 8 MB resume threshold — resume sooner
-    backpressureHighCap: 48 * 1024 * 1024,    // 48 MB pause cap — pause sooner
-    useMultiChannel: false,   // single DataChannel only — no multi-channel contention
-    slowStartThreshold: 16,   // hand off to AIMD earlier
+    windowFloor: 64,
+    windowCeiling: 384,
+    windowGrowDivisor: 4,
+    backpressureLowBytes: 1 * 1024 * 1024,   // resume at 1 MB — reliable on Android Chrome under load
+    backpressureHighCap: 10 * 1024 * 1024,   // pause at 10 MB — prevents bufferbloat on mobile hotspot
+    useMultiChannel: false,
+    slowStartThreshold: 128,
   };
 
-  private activeProfile = TransferEngine.PROFILE_LAN; // default until detected
+  private static readonly PROFILE_RAMP = {
+    windowFloor: 16,
+    windowCeiling: 512,
+    windowGrowDivisor: 2,
+    backpressureLowBytes: 2 * 1024 * 1024,
+    backpressureHighCap: 8 * 1024 * 1024,
+    useMultiChannel: true,
+    slowStartThreshold: 64,
+  };
 
-  // ── Live RAM Watchdog ──────────────────────────────────────────────────────
+  private activeProfile = TransferEngine.PROFILE_RAMP;
+
+  // RAM watchdog
   private ramWatchdogInterval: ReturnType<typeof setInterval> | null = null;
+  private staleWatchdogInterval: ReturnType<typeof setInterval> | null = null;
+  private lastAckReceivedAt = 0;
   private static readonly RAM_WARN_MB = 400;
   private static readonly RAM_FLUSH_MB = 600;
   private partialBlobs: Blob[] = [];
 
-  // ── Adaptive window (ACK-counter based AIMD) ──────────────────────────────────
-  // dynamicBackpressureHigh grows with the window to avoid false pauses.
+  // Adaptive window (AIMD)
   private slowStartActive = true;
-  private slowStartThreshold = this.activeProfile.slowStartThreshold; // switch to AIMD when window hits this
+  private slowStartThreshold = this.activeProfile.slowStartThreshold;
   private dynamicBackpressureHigh = this.activeProfile.windowFloor * CHUNK_SIZE * 1.5;
-  // currentWindowSize is the live window.  It grows +WINDOW_GROW_STEP per growth
-  // tick and shrinks ×0.75 on DataChannel backpressure (multiplicative decrease).
   private currentWindowSize = this.activeProfile.windowFloor;
-  // acksSinceGrow counts ACKs since the last window increase.
-  // Grow when count reaches ceil(currentWindowSize / windowGrowDivisor)
   private acksSinceGrow = 0;
 
-  // ── Receiver state ──────────────────────────────────────────────────────────
-  // RAM-buffered fallback (used when streamWriter is not available)
+  // Receiver state
   private receiveChunksArray: ArrayBuffer[] = [];
   private receivedChunks = new Set<number>();
   private fileMeta: FileMetadata | null = null;
-  // Streaming mode: write each chunk directly to disk as it arrives.
-  // Eliminates the need to hold the entire file in RAM.
   private streamWriter: FileSystemWritableFileStream | null = null;
 
-  // Synchronous receive queue — raw buffers pushed without awaiting
   private receiveQueue: ArrayBuffer[] = [];
   private isProcessingQueue = false;
+  private lastFlushedIndex = -1;
+  private static readonly WRITE_BATCH_BYTES = 4 * 1024 * 1024; // 4 MB
 
-  // ── Telemetry ────────────────────────────────────────────────────────────────
+  // Batched ACK state
+  private pendingAcks: number[] = [];
+  private ackFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly ACK_FLUSH_INTERVAL_MS = 2;  // Reduced from 8ms: prevents phone event-loop saturation from starving ACKs on hotspot/LAN
+  private static readonly ACK_FLUSH_COUNT = 32;
+
+  // Telemetry
   private startTime = 0;
   private bytesTransferred = 0;
   private speedSamples: { time: number; bytes: number }[] = [];
   private lastBytesForSpeed = 0;
   private onTelemetryUpdate: ((t: TransferTelemetry) => void) | null = null;
-  // onComplete is called:
-  //   blob (Blob)      → receiver, buffered mode — assemble from RAM
-  //   null             → receiver, streaming mode — file is already on disk
-  //   undefined        → sender — all chunks sent, wait for TRANSFER_COMPLETE
   private onComplete: ((blob?: Blob | null) => void) | null = null;
-  private telemetryInterval: any = null;
+  private telemetryInterval: ReturnType<typeof setInterval> | null = null;
 
-  // ── Hasher worker pool (2 workers → parallel hashing) ────────────────────────
+  // Hasher worker pool
   private hasherWorkers: Worker[] = [];
   private hasherCallbacks = new Map<number, (hash: bigint) => void>();
   private hasherIdCounter = 0;
@@ -150,70 +148,57 @@ export class TransferEngine {
   private hasherWorkerReadyResolve!: () => void;
   private workerRoundRobin = 0;
 
-  constructor(connections: any[]) {
+  constructor(connections: RTCDataChannel[]) {
     this.connections = connections;
+
+    this.hasherWorkerReadyResolve = () => {};
+    this.hasherWorkerReady = Promise.resolve();
+    // Application-level hashing removed. WebRTC SCTP already guarantees data integrity via CRC32c.
+    // This saves massive CPU and RAM bandwidth. 
+
+    // BUG 1 FIX: tune socket buffers after workers are set up
     this.tuneSocketBuffers();
-
-    this.hasherWorkerReady = new Promise(resolve => {
-      this.hasherWorkerReadyResolve = resolve;
-    });
-
-    // Spawn 2 hasher workers so hash operations overlap with I/O
-    const WORKER_COUNT = 2;
-    for (let i = 0; i < WORKER_COUNT; i++) {
-      const w = new Worker(
-        new URL('./hasher.worker.ts', import.meta.url),
-        { type: 'module' }
-      );
-      w.onmessage = (e) => {
-        if (e.data.type === 'READY') {
-          this.hasherReadyCount++;
-          if (this.hasherReadyCount === WORKER_COUNT) {
-            this.hasherWorkerReadyResolve();
-          }
-          return;
-        }
-        const cb = this.hasherCallbacks.get(e.data.id);
-        if (cb) {
-          this.hasherCallbacks.delete(e.data.id);
-          cb(e.data.hash);
-        }
-      };
-      this.hasherWorkers.push(w);
-    }
   }
 
-  public setControlConnections(conns: any[]) {
+  public setControlConnections(conns: RTCDataChannel[]) {
     this.controlConnections = conns;
+    this.tuneSocketBuffers();
+  }
+
+  public setConnections(dataConns: RTCDataChannel[], controlConns: RTCDataChannel[]) {
+    this.connections = dataConns;
+    this.controlConnections = controlConns;
+    this.tuneSocketBuffers();
+    console.log(`[TransferEngine] Connections updated: ${dataConns.length} data, ${controlConns.length} control`);
+    // BUG 13 FIX: resume pump when channels are hot-swapped
+    if (this.isSending && !this.isCanceled) {
+      this.pumpWindow();
+    }
   }
 
   public setCallbacks(
     onTelemetry: (t: TransferTelemetry) => void,
-    onComplete: (blob?: Blob) => void
+    onComplete: (blob?: Blob | null) => void
   ) {
     this.onTelemetryUpdate = onTelemetry;
     this.onComplete = onComplete;
   }
 
-  // ── Internal: hash via round-robin worker pool ─────────────────────────────
   private async hashPayload(payload: Uint8Array): Promise<bigint> {
-    await this.hasherWorkerReady;
-    return new Promise((resolve) => {
-      const id = this.hasherIdCounter++;
-      this.hasherCallbacks.set(id, resolve);
-      const workerIdx = this.workerRoundRobin++ % this.hasherWorkers.length;
-      const copy = payload.slice();                       // own ArrayBuffer
-      this.hasherWorkers[workerIdx].postMessage({ id, payload: copy }, [copy.buffer]);
-    });
+    // Redundant application-level hashing removed for speed.
+    // WebRTC Data Channels (SCTP) have strict CRC32c checksums built-in.
+    return 0n;
   }
 
-  // ── Buffer tuning ──────────────────────────────────────────────────────────
-  private tuneSocketBuffers() {
+  // BUG 1 FIX: Access bufferedAmountLowThreshold directly on raw RTCDataChannel,
+  // NOT on a non-existent .dataChannel wrapper property.
+  public tuneSocketBuffers() {
     for (const conn of this.connections) {
-      if (conn?.dataChannel) {
-        conn.dataChannel.bufferedAmountLowThreshold = this.activeProfile.backpressureLowBytes;
-        conn.dataChannel.onbufferedamountlow = () => {
+      if (conn && typeof conn.bufferedAmountLowThreshold !== 'undefined') {
+        conn.bufferedAmountLowThreshold = this.activeProfile.backpressureLowBytes;
+        conn.onbufferedamountlow = () => {
           if (this.backpressurePaused) {
+            console.log('[TransferEngine] bufferedamountlow fired — resuming pump');
             this.backpressurePaused = false;
             this.backpressurePausedSince = 0;
             this.pumpWindow();
@@ -223,18 +208,6 @@ export class TransferEngine {
     }
   }
 
-/**
-   * ACK-counter based AIMD window growth (additive increase).
-   * Called on every ACK from processAck — guaranteed to grow the window.
-   *
-   * Growth tick fires every ceil(currentWindowSize / 4) ACKs.
-   * That's roughly once per quarter-RTT, so the window doubles per full RTT.
-   * No timing measurement, no clock bugs, no bootstrap delay.
-   *
-   * Example ramp at 20 MB/s (40 ACKs/s):
-   *   window=32: tick every 8 ACKs → 5 ticks/s × +2 = +10 chunks/s
-   *   32 → 128 ceiling in (128-32)/10 = 9.6 seconds
-   */
   private growWindow(): void {
     if (this.currentWindowSize >= this.activeProfile.windowCeiling) return;
     this.acksSinceGrow++;
@@ -250,12 +223,11 @@ export class TransferEngine {
     );
   }
 
-  /** Multiplicative decrease — called when DataChannel backpressure fires. */
   private shrinkWindow(): void {
     const prev = this.currentWindowSize;
     if (this.slowStartActive) {
       this.slowStartThreshold = Math.max(Math.floor(this.currentWindowSize * 0.75), this.activeProfile.windowFloor);
-      this.slowStartActive = false; // drop into AIMD immediately after first congestion
+      this.slowStartActive = false;
     }
     this.currentWindowSize = Math.max(this.activeProfile.windowFloor, Math.floor(this.currentWindowSize * 0.75));
     this.acksSinceGrow = 0;
@@ -272,9 +244,7 @@ export class TransferEngine {
     );
   }
 
-
-
-  // ─── Sender: Public API ────────────────────────────────────────────────────
+  // ─── Sender: Public API ───────────────────────────────────────────────────
   public async startTransfer(file: File, resumeManifest: number[] = []) {
     this.isCanceled = false;
     this.file = file;
@@ -293,60 +263,152 @@ export class TransferEngine {
     this.backpressurePaused = false;
     this.backpressurePausedSince = 0;
 
-    // Reset adaptive window to floor so we ramp up fresh for each file
-    this.currentWindowSize = this.activeProfile.windowFloor;
+    // Always ramp from a conservative floor regardless of detected profile.
+    // This prevents blasting the receiver (especially mobile) with 128 MB in-flight
+    // from chunk 0. AIMD slow-start grows the window based on actual ACK rate.
+    this.activeProfile = TransferEngine.PROFILE_RAMP;
+    this.currentWindowSize = TransferEngine.PROFILE_RAMP.windowFloor;
     this.acksSinceGrow = 0;
     this.slowStartActive = true;
-    this.slowStartThreshold = this.activeProfile.slowStartThreshold;
+    this.slowStartThreshold = TransferEngine.PROFILE_RAMP.slowStartThreshold;
     this.updateDynamicBackpressure();
+    // Reset network detection so each transfer re-probes RTT fresh
+    this.networkProfile = 'unknown';
+    this.rttSamples = [];
+    this.rttProbeStartTimes.clear();
 
     this.startTime = performance.now();
     this.bytesTransferred = resumeManifest.length * CHUNK_SIZE;
 
     this.startTelemetry();
 
-    // Kick off prefetch pipeline then send
+    // Stale backpressure + inFlight-deadlock watchdog — fires even when zero ACKs arrive (phone→laptop direction)
+    if (this.staleWatchdogInterval) { clearInterval(this.staleWatchdogInterval); this.staleWatchdogInterval = null; }
+    this.lastAckReceivedAt = 0;
+    this.staleWatchdogInterval = setInterval(() => {
+      if (!this.isSending || this.isCanceled) return;
+
+      // ── Path A: backpressure pause is stuck ──────────────────────────────
+      if (this.backpressurePaused && this.backpressurePausedSince > 0) {
+        const elapsed = Date.now() - this.backpressurePausedSince;
+        if (elapsed >= 800) {
+          const totalBuffered = this.connections.reduce((sum, c) => sum + (c?.bufferedAmount ?? 0), 0);
+          if (totalBuffered < this.activeProfile.backpressureLowBytes || this.inFlight.size === 0) {
+            // Buffer drained OR all ACKs arrived — safe to resume
+            console.warn(`[TransferEngine] Stale backpressure cleared by watchdog (${elapsed}ms, buffered=${totalBuffered}, inFlight=${this.inFlight.size})`);
+            this.backpressurePaused = false;
+            this.backpressurePausedSince = 0;
+            this.pumpWindow();
+          } else if (elapsed >= 3000) {
+            // Hard timeout: SCTP guarantees the buffer drains eventually.
+            // bufferedAmount on Android Chrome can read stale/high under CPU load.
+            // Force-clear unconditionally — do not reset the timer.
+            console.warn(`[TransferEngine] Hard timeout: force-clearing backpressure after ${elapsed}ms (buffered=${totalBuffered})`);
+            this.backpressurePaused = false;
+            this.backpressurePausedSince = 0;
+            this.pumpWindow();
+          }
+          // NOTE: no else-reset of backpressurePausedSince — that was the deadlock bug.
+        }
+      }
+
+      // ── Path B: window full but no ACKs arriving (inFlight deadlock) ────
+      if (
+        !this.backpressurePaused &&
+        this.inFlight.size >= this.currentWindowSize &&
+        this.lastAckReceivedAt > 0
+      ) {
+        const noAckMs = Date.now() - this.lastAckReceivedAt;
+        if (noAckMs > 3000) {
+          // Window is full and no ACK has arrived in 3s.
+          // On hotspot/USB tethering, SCTP can stall ACK delivery asymmetrically.
+          // Clearing inFlight is safe: SCTP guarantees chunk delivery, so the
+          // receiver already has the data. Any late ACK will be a graceful no-op.
+          console.warn(`[TransferEngine] InFlight deadlock: clearing ${this.inFlight.size} stuck slots (${noAckMs}ms no ACK)`);
+          this.inFlight.clear();
+          this.lastAckReceivedAt = Date.now(); // prevent re-trigger on next tick
+          this.pumpWindow();
+        }
+      }
+
+      // ── Path C: pump went idle with chunks remaining (prefetch race) ─────
+      // Scenario: fire-and-forget prefetchBatch() sets isPrefetching=true just
+      // before the pump calls await prefetchBatch() for the next chunk. The
+      // awaited call returns immediately (isPrefetching guard), cache is still
+      // empty, pump breaks. Background prefetch fills cache but inFlight=0
+      // means no more ACKs will call pumpWindow. Transfer stalls permanently.
+      // The primary fix is in prefetchBatch's finally block; this is the safety net.
+      if (
+        !this.backpressurePaused &&
+        !this.isPumping &&
+        !this.isPrefetching &&
+        this.inFlight.size === 0 &&
+        this.ackedChunks.size < this.totalChunks &&
+        this.lastAckReceivedAt > 0
+      ) {
+        const idleMs = Date.now() - this.lastAckReceivedAt;
+        if (idleMs > 400) {
+          console.warn(`[TransferEngine] Idle pump: inFlight=0, pump not running, ${this.ackedChunks.size}/${this.totalChunks} done — restarting (${idleMs}ms idle)`);
+          this.lastAckReceivedAt = Date.now(); // reset to avoid rapid re-fires
+          this.pumpWindow();
+        }
+      }
+    }, 250);
+
     await this.prefetchBatch();
     this.pumpWindow();
   }
 
-  /**
-   * Prefetch+hash the next PREFETCH_BATCH chunks in parallel.
-   * Reads N file slices concurrently, hashes them concurrently,
-   * and stores the resulting ready-to-send packets in the cache.
-   */
   private async prefetchBatch() {
-    if (!this.file || this.isCanceled) return;
+    if (!this.file || this.isCanceled || this.isPrefetching) return;
+    this.isPrefetching = true;
 
-    const tasks: Promise<void>[] = [];
-    let scheduled = 0;
+    try {
+      const tasks: Promise<void>[] = [];
+      let scheduled = 0;
 
-    for (
-      let idx = this.nextChunkIndex;
-      idx < this.totalChunks && scheduled < PREFETCH_BATCH;
-      idx++
-    ) {
-      if (
-        this.ackedChunks.has(idx) ||
-        this.packetCache.has(idx) ||
-        this.prefetchInProgress.has(idx)
-      ) continue;
+      for (
+        let idx = this.nextChunkIndex;
+        idx < this.totalChunks && scheduled < PREFETCH_BATCH;
+        idx++
+      ) {
+        if (
+          this.ackedChunks.has(idx) ||
+          this.packetCache.has(idx) ||
+          this.prefetchInProgress.has(idx)
+        ) continue;
 
-      this.prefetchInProgress.add(idx);
-      scheduled++;
+        this.prefetchInProgress.add(idx);
+        scheduled++;
 
-      tasks.push(this.buildPacket(idx).then(packet => {
-        this.prefetchInProgress.delete(idx);
-        if (packet) this.packetCache.set(idx, packet);
-      }));
-    }
+        tasks.push(
+          this.buildPacket(idx).then(packet => {
+            this.prefetchInProgress.delete(idx);
+            if (packet) this.packetCache.set(idx, packet);
+          }).catch(err => {
+            // Always remove from in-progress on failure so the chunk can be retried.
+            // Without this, a buildPacket rejection leaves the index permanently in
+            // prefetchInProgress and the pump never re-schedules it.
+            this.prefetchInProgress.delete(idx);
+            console.warn(`[TransferEngine] buildPacket(${idx}) failed (will retry):`, err);
+          })
+        );
+      }
 
-    if (tasks.length > 0) {
-      await Promise.all(tasks);
+      if (tasks.length > 0) {
+        await Promise.all(tasks);
+      }
+    } finally {
+      this.isPrefetching = false;
+      // KEY FIX: if the pump exited because isPrefetching was true when it called
+      // prefetchBatch (fire-and-forget race), it broke out with inFlight=0 and
+      // nothing will call pumpWindow again. Restart it here.
+      if (this.isSending && !this.isCanceled && !this.isPumping && !this.backpressurePaused) {
+        this.pumpWindow();
+      }
     }
   }
 
-  /** Read one chunk, compress (optional), hash, build binary packet. Pure CPU work. */
   private async buildPacket(index: number): Promise<ArrayBuffer | null> {
     if (!this.file || this.isCanceled) return null;
 
@@ -378,20 +440,16 @@ export class TransferEngine {
     return packet.buffer;
   }
 
-  // ── Sliding window pump ───────────────────────────────────────────────────
+  // BUG 13 FIX: Only select from open channels in round-robin. Break if none open.
   private async pumpWindow() {
-    // Guard against re-entrancy
     if (this.isPumping || !this.isSending || !this.file) return;
     if (this.backpressurePaused) return;
 
     this.isPumping = true;
+    let iterations = 0;
     try {
-      // Re-read window size each iteration so window growth (from concurrent ACKs)
-      // takes effect without waiting for the next pump call.
-      const windowNow = this.currentWindowSize;
-
       while (
-        this.inFlight.size < windowNow &&
+        this.inFlight.size < this.currentWindowSize &&
         this.nextChunkIndex < this.totalChunks &&
         !this.isCanceled &&
         !this.backpressurePaused
@@ -403,7 +461,6 @@ export class TransferEngine {
           continue;
         }
 
-        // If packet isn't ready yet, wait for prefetch to finish
         if (!this.packetCache.has(chunkIndex)) {
           await this.prefetchBatch();
           if (!this.packetCache.has(chunkIndex)) break;
@@ -412,36 +469,59 @@ export class TransferEngine {
         const packet = this.packetCache.get(chunkIndex)!;
         this.packetCache.delete(chunkIndex);
 
-        // Safety: evict oldest cached entry if cap exceeded (e.g. many NACKs)
         if (this.packetCache.size > PACKET_CACHE_MAX) {
           const firstKey = this.packetCache.keys().next().value;
           if (firstKey !== undefined) this.packetCache.delete(firstKey);
         }
         this.nextChunkIndex++;
 
-        // ── Dynamic backpressure check ───────────────────────────────────────
-        // Use this.dynamicBackpressureHigh — updated by updateAdaptiveWindow().
-        const totalBuffered = this.connections.reduce(
-          (sum, c) => sum + (c?.dataChannel?.bufferedAmount ?? 0), 0
-        );
-        if (totalBuffered > this.dynamicBackpressureHigh) {
+        if (iterations++ % 16 === 0) {
+          // BUG 1 FIX: read bufferedAmount directly on the raw RTCDataChannel
+          const totalBuffered = this.connections.reduce(
+            (sum, c) => sum + (c?.bufferedAmount ?? 0), 0
+          );
+          if (totalBuffered > this.dynamicBackpressureHigh) {
+            this.packetCache.set(chunkIndex, packet);
+            this.nextChunkIndex--;
+            this.backpressurePaused = true;
+            this.backpressurePausedSince = Date.now();
+            break;
+          }
+        }
+
+        // BUG 13 FIX: dynamically filter to only open channels
+        const openConns = this.connections.filter(c => c && c.readyState === 'open');
+        if (openConns.length === 0) {
+          // BUG 4 FIX: guard send — put packet back and stop
           this.packetCache.set(chunkIndex, packet);
           this.nextChunkIndex--;
-          this.backpressurePaused = true;
-          this.backpressurePausedSince = Date.now();
-          this.shrinkWindow();   // multiplicative decrease on congestion
           break;
         }
 
-        // Round-robin across data channels
-        const conn = this.connections[this.nextConnIdx++ % this.connections.length];
-        
-        // RTT Tracking SENDER: Record time immediately before dispatching the chunk
+        const conn = openConns[this.nextConnIdx++ % openConns.length];
+
+        // BUG 4 FIX: explicit readyState guard before send
+        if (!conn || conn.readyState !== 'open') {
+          this.packetCache.set(chunkIndex, packet);
+          this.nextChunkIndex--;
+          break;
+        }
+
         if (chunkIndex < TransferEngine.RTT_SAMPLE_COUNT && this.networkProfile === 'unknown') {
           this.rttProbeStartTimes.set(chunkIndex, performance.now());
         }
 
-        conn.send(packet);
+        try {
+          conn.send(packet);
+        } catch (sendErr) {
+          // Browser buffer full — put packet back, pause, and let watchdog or bufferedamountlow resume.
+          console.warn('[TransferEngine] send() threw — buffer full, pausing pump');
+          this.packetCache.set(chunkIndex, packet);
+          this.nextChunkIndex--;
+          this.backpressurePaused = true;
+          this.backpressurePausedSince = Date.now();
+          break;
+        }
 
         this.inFlight.add(chunkIndex);
         const view = new DataView(packet);
@@ -463,8 +543,8 @@ export class TransferEngine {
   public processAck(index: number) {
     this.inFlight.delete(index);
     this.ackedChunks.add(index);
+    this.lastAckReceivedAt = Date.now();
 
-    // RTT Measurement & Profiling Update
     if (this.networkProfile === 'unknown' && this.rttProbeStartTimes.has(index)) {
       const rtt = performance.now() - this.rttProbeStartTimes.get(index)!;
       this.rttProbeStartTimes.delete(index);
@@ -477,23 +557,37 @@ export class TransferEngine {
           ? TransferEngine.PROFILE_LAN
           : TransferEngine.PROFILE_WIFI;
 
-        // Apply profile — update all live AIMD state
+        // BUG: window jump fixed — DO NOT use windowFloor here (PROFILE_LAN floor=1024 would
+        // immediately blast 128 MB into the channel from a cold start of 16-32 chunks,
+        // causing WebRTC buffer overrun and a permanent stall). Instead, preserve the
+        // current window and only clamp it down to the new ceiling.
         this.currentWindowSize = Math.max(
-          this.activeProfile.windowFloor,
+          16, // absolute safety floor — never below 2 MB in-flight
           Math.min(this.currentWindowSize, this.activeProfile.windowCeiling)
         );
         this.slowStartThreshold = this.activeProfile.slowStartThreshold;
 
-        // If wifi, disable extra channels — close all but the primary DataChannel
+        // BUG 10 FIX: call conn.close() directly, not conn.dataChannel?.close()
         if (!this.activeProfile.useMultiChannel && this.connections.length > 1) {
           const primary = this.connections[0];
           this.connections.slice(1).forEach(conn => {
-            try { conn.dataChannel?.close(); } catch (_) {}
+            try { conn.close(); } catch (_) {}
           });
           this.connections = [primary];
         }
 
-        // Apply dynamic limit updates with new bounds
+        // Cap window growth to protect slower receivers (phone CPU, mobile WebRTC stack)
+        // True ceiling is enforced by AIMD — the window only grows if ACKs keep arriving.
+        if (this.networkProfile === 'lan') {
+          this.activeProfile = {
+            ...TransferEngine.PROFILE_LAN,
+            windowFloor: 16,    // match absolute floor so shrinkWindow doesn't conflict
+            windowCeiling: 512, // allow up to 512 chunks (64 MB) — LAN can sustain it via backpressure
+          };
+          // Re-clamp in case the new ceiling differs from PROFILE_LAN's
+          this.currentWindowSize = Math.min(this.currentWindowSize, 512);
+        }
+
         this.updateDynamicBackpressure();
         this.tuneSocketBuffers();
 
@@ -501,17 +595,18 @@ export class TransferEngine {
       }
     }
 
-    // Grow window on every ACK (AIMD additive-increase phase).
-    // growWindow() is a no-op when already at ceiling.
     if (this.isSending && !this.backpressurePaused) {
       if (this.slowStartActive) {
-        // Exponential growth: double window every RTT-worth of ACKs
         this.acksSinceGrow++;
         if (this.acksSinceGrow >= this.currentWindowSize) {
-          this.currentWindowSize = Math.min(this.currentWindowSize * 2, this.slowStartThreshold);
+          this.currentWindowSize = Math.min(
+            this.currentWindowSize * 2,
+            this.slowStartThreshold,
+            this.activeProfile.windowCeiling  // never overshoot ceiling during slow-start
+          );
           this.acksSinceGrow = 0;
           if (this.currentWindowSize >= this.slowStartThreshold) {
-            this.slowStartActive = false; // hand off to AIMD
+            this.slowStartActive = false;
           }
         }
         this.updateDynamicBackpressure();
@@ -520,32 +615,34 @@ export class TransferEngine {
       }
     }
 
-    // ── Polling backpressure recovery ───────────────────────────────────────
-    // Safety net #1: ACK-driven poll — catches missed 'bufferedamountlow' events.
+    // BUG 1 FIX: read bufferedAmount directly on raw RTCDataChannel
     if (this.backpressurePaused) {
       const total = this.connections.reduce(
-        (sum, c) => sum + (c?.dataChannel?.bufferedAmount ?? 0), 0
+        (sum, c) => sum + (c?.bufferedAmount ?? 0), 0
       );
-      if (total <= this.activeProfile.backpressureLowBytes) {
+      // Clear pause if buffer is drained OR if all in-flight chunks are now ACKed.
+      // The second condition handles Android Chrome returning stale bufferedAmount
+      // readings under CPU load (hotspot routing + sending simultaneously).
+      if (total <= this.activeProfile.backpressureLowBytes || this.inFlight.size === 0) {
         this.backpressurePaused = false;
         this.backpressurePausedSince = 0;
       }
 
-      // Safety net #2: Stale-pause watchdog
       if (
         this.backpressurePaused &&
         this.backpressurePausedSince > 0 &&
         Date.now() - this.backpressurePausedSince > STALE_PAUSE_TIMEOUT_MS
       ) {
         if (total < this.activeProfile.backpressureLowBytes) {
-          console.warn('[TransferEngine] Stale pause cleared by watchdog');
+          console.warn('[TransferEngine] Stale pause cleared in processAck');
           this.backpressurePaused = false;
           this.backpressurePausedSince = 0;
-        } else {
-          // Still genuinely congested — reset the watchdog timer, don't force-clear
-          this.backpressurePausedSince = Date.now();
         }
+        // NOTE: do NOT reset backpressurePausedSince here.
+        // Resetting the clock on every ACK was the deadlock — it prevented the
+        // setInterval watchdog's 3000ms hard-timeout from ever accumulating.
       }
+
     }
 
     this.pumpWindow();
@@ -554,30 +651,19 @@ export class TransferEngine {
   public processNack(index: number) {
     this.inFlight.delete(index);
     this.retransmits++;
-    // Invalidate cached packet so it gets rebuilt fresh
     this.packetCache.delete(index);
     this.prefetchInProgress.delete(index);
-    // Rebuild and resend directly
+    // BUG 4 FIX: guard readyState before calling send
     this.buildPacket(index).then(packet => {
       if (!packet || this.isCanceled) return;
       const conn = this.connections[this.nextConnIdx++ % this.connections.length];
+      if (!conn || conn.readyState !== 'open') return;
       conn.send(packet);
       this.inFlight.add(index);
     });
   }
 
-  // ── Receiver: Public API ───────────────────────────────────────────────────
-
-  /**
-   * Provide a writable file stream so the receiver stores chunks directly on
-   * disk instead of RAM.  Must be called AFTER initReceiver and BEFORE any
-   * START_TRANSFER is sent (i.e. before chunks arrive).
-   *
-   * The stream should already be opened and pre-truncated to fileMeta.size.
-   * It will be closed automatically when all chunks are received.
-   *
-   * If not set (or set to null), the engine falls back to the RAM-buffer mode.
-   */
+  // ─── Receiver: Public API ────────────────────────────────────────────────
   public setStreamWriter(writer: FileSystemWritableFileStream | null) {
     this.streamWriter = writer;
   }
@@ -588,11 +674,12 @@ export class TransferEngine {
     this.receivedChunks.clear();
     this.startTime = performance.now();
     this.bytesTransferred = 0;
-    this.receiveChunksArray = new Array(meta.totalChunks); // slots only; no data yet
+    this.receiveChunksArray = new Array(meta.totalChunks);
     this.receiveQueue = [];
     this.isProcessingQueue = false;
+    this.lastFlushedIndex = -1;
     this.partialBlobs = [];
-    this.streamWriter = null; // caller sets this via setStreamWriter() if desired
+    this.streamWriter = null;
     this.startTelemetry();
     this.startRamWatchdog();
 
@@ -600,50 +687,47 @@ export class TransferEngine {
   }
 
   private startRamWatchdog(): void {
-    if (!('memory' in performance)) return; // API not available (Firefox)
-    
+    if (!('memory' in performance)) return;
+
     this.ramWatchdogInterval = setInterval(() => {
       const usedMB = (performance as any).memory.usedJSHeapSize / (1024 * 1024);
 
       if (usedMB > TransferEngine.RAM_FLUSH_MB && !this.streamWriter) {
-        // Fallback mode is accumulating too much — flush what we have to a partial blob
-        // and clear the array to free memory, then continue receiving
         console.warn(`[TransferEngine] RAM at ${usedMB.toFixed(0)} MB — emergency flush`);
         this.emergencyFlushReceiveBuffer();
       } else if (usedMB > TransferEngine.RAM_WARN_MB) {
         console.warn(`[TransferEngine] RAM at ${usedMB.toFixed(0)} MB — approaching limit`);
       }
-    }, 5000); // check every 5 seconds
+    }, 5000);
   }
 
   private emergencyFlushReceiveBuffer(): void {
     if (this.receiveChunksArray.length === 0) return;
-    
-    const snapshot = [...this.receiveChunksArray];
-    
-    // Release references immediately in the actual slots
-    for (let i = 0; i < this.receiveChunksArray.length; i++) {
-        if (this.receiveChunksArray[i]) {
-            (this.receiveChunksArray as any)[i] = null;
-        }
+
+    let contiguousEnd = this.lastFlushedIndex;
+    while (contiguousEnd + 1 < this.fileMeta!.totalChunks && this.receiveChunksArray[contiguousEnd + 1] != null) {
+      contiguousEnd++;
     }
-    this.receiveChunksArray = new Array(this.fileMeta!.totalChunks);
 
-    // Store partial blob in a separate list
-    const partialBlob = new Blob(snapshot.filter(b => b != null));
-    this.partialBlobs.push(partialBlob);
-
-    console.log(`[TransferEngine] Flushed ${snapshot.filter(b => b != null).length} chunks to partial blob`);
+    if (contiguousEnd > this.lastFlushedIndex) {
+      const chunksToFlush = this.receiveChunksArray.slice(this.lastFlushedIndex + 1, contiguousEnd + 1);
+      const partialBlob = new Blob(chunksToFlush);
+      this.partialBlobs.push(partialBlob);
+      
+      for (let i = this.lastFlushedIndex + 1; i <= contiguousEnd; i++) {
+        (this.receiveChunksArray as any)[i] = null;
+      }
+      this.lastFlushedIndex = contiguousEnd;
+      console.log(`[TransferEngine] Flushed chunks up to ${contiguousEnd} to partial blob`);
+    } else {
+      console.warn('[TransferEngine] Cannot flush: no contiguous chunks available at the start');
+    }
   }
 
   public getReceivedManifest(): number[] {
     return Array.from(this.receivedChunks);
   }
 
-  /**
-   * Called by the DataChannel data event — SYNCHRONOUS, zero awaiting.
-   * Just push to the queue and schedule a drain tick.
-   */
   public enqueueChunk(buffer: ArrayBuffer) {
     if (this.isCanceled || !this.fileMeta) return;
     this.receiveQueue.push(buffer);
@@ -652,25 +736,17 @@ export class TransferEngine {
     }
   }
 
-  /**
-   * Drain the receive queue — serial async loop.
-   *
-   * The serial design is intentional: ACKs are sent on line 593 BEFORE any
-   * await (before hash verification and before disk write), so the sender's
-   * window advances at full network speed regardless of how long disk writes
-   * take. A parallel design would cause a finishReceive() race — since
-   * receivedChunks.add() fires before the disk write, the last chunk can
-   * trigger finishReceive() and close the FileSystemWritableFileStream while
-   * other concurrent tasks still have pending .write() calls, corrupting the
-   * file silently.
-   */
   private async drainReceiveQueue() {
     if (this.isProcessingQueue) return;
     this.isProcessingQueue = true;
 
     while (this.receiveQueue.length > 0 && !this.isCanceled) {
       const buffer = this.receiveQueue.shift()!;
-      await this.processChunkInternal(buffer);
+      try {
+        await this.processChunkInternal(buffer);
+      } catch (err) {
+        console.error('[TransferEngine] Error processing chunk:', err);
+      }
     }
 
     this.isProcessingQueue = false;
@@ -687,118 +763,152 @@ export class TransferEngine {
     const view = new DataView(buffer);
 
     const index = view.getUint32(0, true);
-    const expectedHash = view.getBigUint64(4, true);
+    // expectedHash field present for future use; SCTP CRC32c guarantees integrity.
+    // const expectedHash = view.getBigUint64(4, true);
     const flags = view.getUint8(12);
     const originalLength = view.getUint32(13, true);
     let payload = packet.slice(HEADER_SIZE);
 
-    // Skip duplicate chunks (can happen with multi-channel / unordered delivery)
     if (this.receivedChunks.has(index)) return;
 
-    // ── IMMEDIATE ACK ─────────────────────────────────────────────────────────
-    // ACK RIGHT AWAY so the sender window advances without waiting for our hash.
-    // Hash verification happens asynchronously below — we only send NACK if corrupt.
-    // On a local LAN/USB link, corruption probability ≈ 0, so this is safe.
-    this.receivedChunks.add(index);
-    this.bytesTransferred += originalLength;
-    this.sendAck(index);
-
-    // Signal completion as soon as we've received all chunks
-    if (this.receivedChunks.size === this.fileMeta!.totalChunks) {
-      // Run final decompression / storage synchronously first
-      // (we continue below before calling finishReceive)
-    }
-
-    // ── DEFERRED VERIFICATION ─────────────────────────────────────────────────
-    // Hash check and decompression happen after ACK — no longer on the critical path.
-    const actualHash = await this.hashPayload(payload);
-    if (expectedHash !== actualHash) {
-      console.warn(`Checksum mismatch on chunk ${index} — requesting retransmit`);
-      // Retract our optimistic accounting
-      this.receivedChunks.delete(index);
-      this.bytesTransferred -= originalLength;
-      this.sendNack(index);
-      return;
-    }
-
-    // Decompress if needed
     if ((flags & 0x01) !== 0) {
       try {
         payload = new Uint8Array(LZ4.decompress(payload));
       } catch {
-        this.receivedChunks.delete(index);
-        this.bytesTransferred -= originalLength;
         this.sendNack(index);
         return;
       }
     }
 
-    // Clean, owned copy of this chunk's bytes
     const cleanBuffer = payload.buffer.slice(
       payload.byteOffset,
       payload.byteOffset + payload.byteLength
     );
 
+    this.receiveChunksArray[index] = cleanBuffer;
+    this.receivedChunks.add(index);
+    this.bytesTransferred += originalLength;
+
+    // ACK BEFORE disk I/O: decouples disk write latency from the ACK path.
+    // On hotspot/LAN the sender fills its inFlight window in milliseconds.
+    // If we wait for await flushWriteBuffer() before ACKing, the sender's
+    // staleWatchdog (3s no-ACK hard timeout) fires, clears inFlight, and
+    // blasts a new burst — creating an oscillation that permanently stalls.
+    // SCTP CRC32c guarantees the data is already safe in receiveChunksArray;
+    // the ACK just tells the sender the slot is consumable.
+    this.sendAck(index);
+
     if (this.streamWriter) {
-      // ── Streaming mode: write directly to disk at the correct byte offset ──
-      // FileSystemWritableFileStream.write({type:'write', position, data}) is a
-      // random-access write — works even with out-of-order chunk delivery.
-      // No data sits in JS heap beyond this single chunk.
-      const byteOffset = index * this.fileMeta!.chunkSize;
-      try {
-        await (this.streamWriter as any).write({
-          type: 'write',
-          position: byteOffset,
-          data: cleanBuffer,
-        });
-      } catch (writeErr) {
-        console.warn(
-          `[Stream] Position write failed on chunk ${index}, ` +
-          `falling back to RAM buffer:`, writeErr
-        );
-        // Graceful fallback: disable streaming, store this chunk in RAM.
-        this.streamWriter = null;
-        this.receiveChunksArray[index] = cleanBuffer;
-      }
-    } else {
-      // ── Buffered mode: accumulate all chunks in RAM ──────────────────────
-      this.receiveChunksArray[index] = cleanBuffer;
+      // flushWriteBuffer is now fire-and-forget from the ACK perspective.
+      // We still await it here so the queue drain stays sequential and we
+      // don't open multiple parallel writes to the same file handle.
+      await this.flushWriteBuffer();
     }
 
-    // Finish only after ALL chunks have been verified and stored/written
     if (this.receivedChunks.size === this.fileMeta!.totalChunks) {
+      if (this.streamWriter) {
+        await this.flushWriteBuffer(true);
+      }
       await this.finishReceive();
     }
   }
 
-  // ── Control message helpers ────────────────────────────────────────────────
+  private async flushWriteBuffer(force = false) {
+    if (!this.streamWriter || !this.fileMeta) return;
+    
+    let contiguousEnd = this.lastFlushedIndex;
+    let batchBytes = 0;
+    while (contiguousEnd + 1 < this.fileMeta.totalChunks && this.receiveChunksArray[contiguousEnd + 1] != null) {
+      batchBytes += this.receiveChunksArray[contiguousEnd + 1].byteLength;
+      contiguousEnd++;
+    }
+
+    if (contiguousEnd > this.lastFlushedIndex) {
+      if (force || batchBytes >= TransferEngine.WRITE_BATCH_BYTES || contiguousEnd === this.fileMeta.totalChunks - 1) {
+        const chunksToFlush = this.receiveChunksArray.slice(this.lastFlushedIndex + 1, contiguousEnd + 1);
+        const combined = new Blob(chunksToFlush);
+        const buf = await combined.arrayBuffer();
+        
+        const byteOffset = (this.lastFlushedIndex + 1) * this.fileMeta.chunkSize;
+        
+        try {
+          await (this.streamWriter as any).write({
+            type: 'write',
+            position: byteOffset,
+            data: buf,
+          });
+          
+          for (let i = this.lastFlushedIndex + 1; i <= contiguousEnd; i++) {
+            (this.receiveChunksArray as any)[i] = null;
+          }
+          this.lastFlushedIndex = contiguousEnd;
+        } catch (writeErr) {
+          console.warn(`[Stream] Batch write failed, falling back to RAM:`, writeErr);
+          this.streamWriter = null;
+        }
+      }
+    }
+  }
+
+  // BUG 2 FIX: Use conn.readyState === 'open' instead of the non-existent conn.open property.
+  // Also added early-return guard if controlConnections is empty.
+  // CHANGE 1: Batched ACKs — accumulate and flush every 50ms or every 32 ACKs.
   private sendAck(index: number) {
-    const buf = new ArrayBuffer(5);
+    if (this.controlConnections.length === 0) return;
+    this.pendingAcks.push(index);
+
+    if (this.pendingAcks.length >= TransferEngine.ACK_FLUSH_COUNT) {
+      // Batch is full — flush immediately
+      if (this.ackFlushTimer !== null) {
+        clearTimeout(this.ackFlushTimer);
+        this.ackFlushTimer = null;
+      }
+      this.flushAcks();
+      return;
+    }
+
+    if (this.ackFlushTimer === null) {
+      this.ackFlushTimer = setTimeout(() => {
+        this.ackFlushTimer = null;
+        this.flushAcks();
+      }, TransferEngine.ACK_FLUSH_INTERVAL_MS);
+    }
+  }
+
+  private flushAcks() {
+    if (this.pendingAcks.length === 0) return;
+    if (this.controlConnections.length === 0) { this.pendingAcks = []; return; }
+
+    // Send one binary message containing all pending ACK indices packed as 5-byte entries
+    // Format: type byte 0x02 + 4-byte LE chunk index, repeated
+    const count = this.pendingAcks.length;
+    const buf = new ArrayBuffer(5 * count);
     const v = new DataView(buf);
-    v.setUint8(0, 0x02);
-    v.setUint32(1, index, true);
+    for (let i = 0; i < count; i++) {
+      v.setUint8(i * 5, 0x02);
+      v.setUint32(i * 5 + 1, this.pendingAcks[i], true);
+    }
+    this.pendingAcks = [];
+
     const conn = this.controlConnections[this.nextCtrlIdx++ % this.controlConnections.length];
-    if (conn?.open ?? true) conn.send(buf);
+    if (conn && conn.readyState === 'open') conn.send(buf);
   }
 
   private sendNack(index: number) {
+    if (this.controlConnections.length === 0) return;
     const buf = new ArrayBuffer(5);
     const v = new DataView(buf);
     v.setUint8(0, 0x03);
     v.setUint32(1, index, true);
     const conn = this.controlConnections[this.nextCtrlIdx++ % this.controlConnections.length];
-    if (conn?.open ?? true) conn.send(buf);
+    if (conn && conn.readyState === 'open') conn.send(buf);
   }
 
-  // ── Finish helpers ─────────────────────────────────────────────────────────
   private async finishReceive() {
     this.stopTelemetry();
     if (!this.fileMeta) { this.receiveChunksArray = []; return; }
 
     if (this.streamWriter) {
-      // ── Streaming mode: seal the file ──────────────────────────────────────
-      // All chunks were written to disk; just close the stream.
-      // caller receives null (not a Blob) — file is already on disk.
       try {
         await this.streamWriter.close();
         console.log('[Stream] File written to disk successfully.');
@@ -806,25 +916,26 @@ export class TransferEngine {
         console.warn('[Stream] stream.close() error:', e);
       }
       this.streamWriter = null;
-      if (this.onComplete) this.onComplete(null); // null = streaming complete
+      if (this.onComplete) this.onComplete(null);
     } else {
-      // ── Buffered mode: assemble Blob from RAM ──────────────────────────────
+      const remaining = this.receiveChunksArray.slice(this.lastFlushedIndex + 1);
+      if (remaining.some(b => b == null)) {
+        console.error("[Stream] Missing chunks in final assembly! File may be corrupted.");
+      }
       const finalParts = [
         ...this.partialBlobs,
-        ...(this.receiveChunksArray.filter(b => b != null))
+        ...remaining
       ];
       const blob = new Blob(finalParts, { type: this.fileMeta.type });
-      
-      // Clear references
+
       this.partialBlobs = [];
       for (let i = 0; i < this.receiveChunksArray.length; i++) {
         (this.receiveChunksArray as any)[i] = null;
       }
       this.receiveChunksArray = [];
-      
+
       if (this.onComplete) this.onComplete(blob);
     }
-
   }
 
   private finishTransfer() {
@@ -833,7 +944,6 @@ export class TransferEngine {
     if (this.onComplete) this.onComplete();
   }
 
-  // ── Telemetry ─────────────────────────────────────────────────────────────
   private startTelemetry() {
     if (this.telemetryInterval) clearInterval(this.telemetryInterval);
     this.telemetryInterval = setInterval(() => {
@@ -844,11 +954,11 @@ export class TransferEngine {
       this.lastBytesForSpeed = this.bytesTransferred;
       this.speedSamples.push({ time: now, bytes: delta });
 
-      const cutoff = now - 2000;
+      const cutoff = now - 8000;
       this.speedSamples = this.speedSamples.filter(s => s.time >= cutoff);
 
       const windowBytes = this.speedSamples.reduce((sum, s) => sum + s.bytes, 0);
-      const windowSec = Math.min((now - this.startTime) / 1000, 2);
+      const windowSec = Math.min((now - this.startTime) / 1000, 8);
       const speedBps = windowSec > 0 ? windowBytes / windowSec : 0;
       const speedMBps = speedBps / (1024 * 1024);
 
@@ -887,10 +997,9 @@ export class TransferEngine {
     }
   }
 
-  // ── Lifecycle ──────────────────────────────────────────────────────────────
-
   public destroy(): void {
-    // 1. Stop all pumping immediately
+    if (this.ackFlushTimer !== null) { clearTimeout(this.ackFlushTimer); this.ackFlushTimer = null; }
+    this.pendingAcks = [];
     this.isSending = false;
     this.isCanceled = true;
     this.backpressurePaused = false;
@@ -901,73 +1010,63 @@ export class TransferEngine {
       this.ramWatchdogInterval = null;
     }
 
-    // 2. Drain and null the prefetch cache
-    this.packetCache.forEach((_, key) => this.packetCache.delete(key));
+    if (this.staleWatchdogInterval) {
+      clearInterval(this.staleWatchdogInterval);
+      this.staleWatchdogInterval = null;
+    }
+
     this.packetCache.clear();
-
-    // 3. Drain the sliding window in-flight map
-    this.inFlight.forEach((_, key) => this.inFlight.delete(key));
     this.inFlight.clear();
-
-    // 4. Clear RTT probe map
     this.rttProbeStartTimes.clear();
     this.rttSamples = [];
 
-    // 5. Terminate Web Workers — they hold their own JS heap
-    this.hasherWorkers?.forEach(worker => {
-      worker.terminate();
-    });
+    this.hasherWorkers?.forEach(worker => worker.terminate());
     this.hasherWorkers = [];
 
-    // 6. Close the FileSystemWritableFileStream if open
     if (this.streamWriter) {
-      this.streamWriter.close().catch(() => {}); // best-effort
+      this.streamWriter.close().catch(() => {});
       this.streamWriter = null;
     }
 
-    // 7. Close all DataChannels — flushes WebRTC internal SCTP buffers
+    // Close all DataChannels — raw RTCDataChannel objects
     this.connections.forEach(conn => {
-      try {
-        conn.dataChannel?.close();
-      } catch (_) {}
+      try { if (conn && typeof conn.close === 'function') conn.close(); } catch (_) {}
     });
     this.connections = [];
 
     this.controlConnections.forEach(conn => {
-      try {
-        conn.dataChannel?.close();
-      } catch (_) {}
+      try { if (conn && typeof conn.close === 'function') conn.close(); } catch (_) {}
     });
     this.controlConnections = [];
 
-    // 8. Clear receive buffer (fallback mode)
+    for (let i = 0; i < this.receiveChunksArray.length; i++) {
+      (this.receiveChunksArray as any)[i] = null;
+    }
     this.receiveChunksArray = [];
     this.partialBlobs = [];
     this.receiveQueue = [];
 
-    // 9. Null large object references explicitly
+    this.hasherCallbacks.clear();
+
     this.file = null;
     this.fileMeta = null;
     this.networkProfile = 'unknown';
     this.activeProfile = TransferEngine.PROFILE_LAN;
 
-    console.log('[TransferEngine] Destroyed — all buffers released');
+    console.log('[TransferEngine] Destroyed — all buffers and workers released');
   }
 
-  /**
-   * Reset sender/receiver state so this engine instance can be reused for the next file.
-   * Does NOT terminate hasher workers — they stay alive for the session.
-   */
-  public resetForNextFile(
-    newConns: any[],
-    newControlConns: any[]
-  ) {
+  public resetForNextFile(newConns: RTCDataChannel[], newControlConns: RTCDataChannel[]) {
     this.stopTelemetry();
     if (this.ramWatchdogInterval) {
       clearInterval(this.ramWatchdogInterval);
       this.ramWatchdogInterval = null;
     }
-    // Close any leftover stream writer before resetting
+
+    if (this.staleWatchdogInterval) {
+      clearInterval(this.staleWatchdogInterval);
+      this.staleWatchdogInterval = null;
+    }
     if (this.streamWriter) {
       this.streamWriter.close().catch(console.warn);
       this.streamWriter = null;
@@ -990,7 +1089,6 @@ export class TransferEngine {
     this.bytesTransferred = 0;
     this.lastBytesForSpeed = 0;
     this.speedSamples = [];
-    // Clear receive state
     for (let i = 0; i < this.receiveChunksArray.length; i++) {
       (this.receiveChunksArray as any)[i] = null;
     }
@@ -998,21 +1096,20 @@ export class TransferEngine {
     this.receiveQueue = [];
     this.receivedChunks.clear();
     this.isProcessingQueue = false;
-    // Update connections
     this.connections = newConns;
     this.controlConnections = newControlConns;
     this.tuneSocketBuffers();
   }
 
   public cleanup() {
+    if (this.ackFlushTimer !== null) { clearTimeout(this.ackFlushTimer); this.ackFlushTimer = null; }
+    this.pendingAcks = [];
     this.stopTelemetry();
     this.isSending = false;
-    // Close any open stream writer (partial file will be on disk — that's fine on cleanup)
     if (this.streamWriter) {
       this.streamWriter.close().catch(console.warn);
       this.streamWriter = null;
     }
-    // Null out slots before releasing array so GC collects ArrayBuffers immediately
     for (let i = 0; i < this.receiveChunksArray.length; i++) {
       (this.receiveChunksArray as any)[i] = null;
     }
@@ -1023,12 +1120,22 @@ export class TransferEngine {
     this.file = null;
     this.speedSamples = [];
     this.lastBytesForSpeed = 0;
-    for (const w of this.hasherWorkers) w.terminate();
-    this.hasherWorkers = [];
     this.hasherCallbacks.clear();
+
+    if (this.ramWatchdogInterval) {
+      clearInterval(this.ramWatchdogInterval);
+      this.ramWatchdogInterval = null;
+    }
+
+    if (this.staleWatchdogInterval) {
+      clearInterval(this.staleWatchdogInterval);
+      this.staleWatchdogInterval = null;
+    }
   }
 
   public cancel() {
+    if (this.ackFlushTimer !== null) { clearTimeout(this.ackFlushTimer); this.ackFlushTimer = null; }
+    this.pendingAcks = [];
     this.isCanceled = true;
     this.cleanup();
     this.inFlight.clear();
