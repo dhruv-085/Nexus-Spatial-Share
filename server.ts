@@ -40,7 +40,7 @@ async function startServer() {
   app.use("/peerjs", peerServer);
 
   // Extend room structure to track precise peer lists for WebRTC
-  const rooms = new Map<string, { isLocked: boolean, sourceId: string | null, peers: string[], offererSocketId: string | null }>();
+  const rooms = new Map<string, { isLocked: boolean, sourceId: string | null, peers: string[], offererSocketId: string | null, peerClientIds?: Map<string, string> }>();
   const socketToRoom = new Map<string, string>();
 
   // Grace-period timers: if a peer disconnects, we wait before destroying the room
@@ -51,7 +51,19 @@ async function startServer() {
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
-    socket.on("join-room", (roomCode) => {
+    socket.on("join-room", (data) => {
+      let roomCode: string;
+      let clientId: string | undefined;
+
+      if (typeof data === 'string') {
+        roomCode = data;
+      } else if (data && typeof data === 'object') {
+        roomCode = data.roomCode;
+        clientId = data.clientId;
+      } else {
+        return;
+      }
+
       socket.join(roomCode);
       socketToRoom.set(socket.id, roomCode);
 
@@ -59,7 +71,16 @@ async function startServer() {
 
       if (!room) {
         // First peer — create room, this peer is the ANSWERER (waits for offer)
-        room = { isLocked: false, sourceId: null, peers: [socket.id], offererSocketId: null };
+        room = { 
+          isLocked: false, 
+          sourceId: null, 
+          peers: [socket.id], 
+          offererSocketId: null,
+          peerClientIds: new Map()
+        };
+        if (clientId) {
+          room.peerClientIds.set(socket.id, clientId);
+        }
         rooms.set(roomCode, room);
         socket.emit('room-status', { status: 'waiting', role: 'answerer', code: roomCode });
         console.log(`[Server] Room ${roomCode} created, waiting for second peer`);
@@ -73,6 +94,11 @@ async function startServer() {
           console.log(`[Server] Room ${roomCode}: destroy timer cancelled — peer rejoined`);
         }
         return;
+      }
+
+      // Ensure peerClientIds map exists
+      if (!room.peerClientIds) {
+        room.peerClientIds = new Map();
       }
 
       // ── Purge TRULY dead peers (socket object gone entirely) ─────────────────
@@ -89,7 +115,26 @@ async function startServer() {
 
       if (genuinelyDeadPeers.length > 0) {
         room.peers = room.peers.filter(id => !genuinelyDeadPeers.includes(id));
+        genuinelyDeadPeers.forEach(id => room.peerClientIds.delete(id));
         console.log(`[Server] Room ${roomCode}: purged ${genuinelyDeadPeers.length} dead peer(s), ${room.peers.length} remain`);
+      }
+
+      // Check if this clientId already exists in the room
+      if (clientId) {
+        const existingPeerSocketId = Array.from(room.peerClientIds.entries())
+          .find(([sid, cid]) => cid === clientId)?.[0];
+        if (existingPeerSocketId && existingPeerSocketId !== socket.id) {
+          console.log(`[Server] ClientId ${clientId} rejoining room ${roomCode} — replacing socket ${existingPeerSocketId} with ${socket.id}`);
+          room.peers = room.peers.filter(id => id !== existingPeerSocketId);
+          room.peerClientIds.delete(existingPeerSocketId);
+          socketToRoom.delete(existingPeerSocketId);
+          
+          const oldSocket = io.sockets.sockets.get(existingPeerSocketId);
+          if (oldSocket) {
+            oldSocket.leave(roomCode);
+          }
+        }
+        room.peerClientIds.set(socket.id, clientId);
       }
 
       const isReconnect = room.peers.includes(socket.id);
@@ -175,6 +220,44 @@ async function startServer() {
         room.sourceId = null;
         console.log(`Drop event in room: ${roomCode}`);
         io.in(roomCode).emit("global-unlock");
+      }
+    });
+
+    socket.on("leave-room", () => {
+      const roomId = socketToRoom.get(socket.id);
+      if (!roomId) return;
+
+      console.log(`[Server] User ${socket.id} explicitly leaving room ${roomId}`);
+      
+      socketToRoom.delete(socket.id);
+      socket.leave(roomId);
+
+      const room = rooms.get(roomId);
+      if (!room) return;
+
+      room.peers = room.peers.filter(id => id !== socket.id);
+      if (room.peerClientIds) {
+        room.peerClientIds.delete(socket.id);
+      }
+
+      if (room.peers.length === 0) {
+        rooms.delete(roomId);
+        const timer = pendingDestroyTimers.get(roomId);
+        if (timer) {
+          clearTimeout(timer);
+          pendingDestroyTimers.delete(roomId);
+        }
+        console.log(`[Server] Room ${roomId} destroyed immediately because it is empty`);
+      } else {
+        // Notify remaining peers that the user left
+        room.peers.forEach(peerId => {
+          console.log(`[Server] Notifying ${peerId} of peer leave in room ${roomId}`);
+          io.to(peerId).emit('peer-disconnected');
+          io.to(peerId).emit('room-status', { status: 'waiting', role: 'answerer', code: roomId });
+        });
+        // Reset room lock state
+        room.isLocked = false;
+        room.sourceId = null;
       }
     });
 

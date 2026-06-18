@@ -235,7 +235,7 @@
     ══════════════════════════════════════════════ */
     #home-screen {
       position: fixed; inset: 0;
-      display: flex; align-items: center; justify-content: center;
+      display: flex; align-items: flex-start; justify-content: center;
       z-index: 10; padding: 56px 16px 36px; overflow-y: auto;
       transition: opacity 0.3s ease, transform 0.3s ease;
     }
@@ -261,9 +261,10 @@
     }
 
     .home-card {
-      width: 100%; max-width: 440px; position: relative;
+      width: 100%; max-width: 400px; position: relative;
       border-radius: 28px; padding: 2px;
       animation: cardIn 0.55s cubic-bezier(0.16,1,0.3,1) both; z-index: 10;
+      margin: auto 0;
     }
     .home-card::before {
       content: ''; position: absolute; inset: 0; border-radius: 28px; padding: 1.5px;
@@ -286,7 +287,7 @@
       background: rgba(10,10,10,0.82);
       backdrop-filter: blur(40px) saturate(160%);
       -webkit-backdrop-filter: blur(40px) saturate(160%);
-      border-radius: 27px; padding: 30px 26px 24px; overflow: hidden;
+      border-radius: 27px; padding: 24px 20px 20px; overflow: hidden;
     }
     .card-inner::before {
       content: ''; position: absolute; inset: 0; border-radius: 27px;
@@ -319,18 +320,18 @@
       border:1px solid rgba(6,182,212,0.15);
     }
     .hero-heading {
-      font-family:'Space Grotesk',sans-serif; font-size:28px; font-weight:800;
-      letter-spacing:-0.8px; line-height:1.15; color:var(--text); margin-bottom:7px;
+      font-family:'Space Grotesk',sans-serif; font-size:24px; font-weight:800;
+      letter-spacing:-0.8px; line-height:1.15; color:var(--text); margin-bottom:4px;
     }
     .hero-heading span {
       background:linear-gradient(135deg,#fff 0%,rgba(232,234,246,0.7) 100%);
       -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
     }
-    .hero-sub { font-size:13px; color:var(--text-muted); margin-bottom:24px; line-height:1.6; }
+    .hero-sub { font-size:12px; color:var(--text-muted); margin-bottom:16px; line-height:1.5; }
     .otp-row { display:flex; gap:8px; justify-content:center; margin-bottom:4px; }
     .otp-box {
-      width:60px; height:64px; background:rgba(14,14,14,0.6); border:none; border-radius:16px;
-      font-family:'JetBrains Mono',monospace; font-size:28px; font-weight:500;
+      width:52px; height:56px; background:rgba(14,14,14,0.6); border:none; border-radius:14px;
+      font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:500;
       color:var(--text); text-align:center; outline:none;
       transition:background 0.2s,box-shadow 0.25s,transform 0.1s; caret-color:var(--primary);
       box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 0 rgba(255,255,255,0.05);
@@ -345,7 +346,7 @@
       box-shadow: inset 0 0 0 1.5px rgba(59,130,246,0.3), inset 0 1px 0 rgba(59,130,246,0.1);
     }
     .globe-wrap {
-      position:relative; margin:14px 0 4px; border-radius:16px; overflow:hidden;
+      position:relative; margin:8px 0 2px; border-radius:16px; overflow:hidden;
       background:rgba(5,5,5,0.5);
       box-shadow: inset 0 0 0 1px rgba(6,182,212,0.08), inset 0 0 40px rgba(6,182,212,0.03);
     }
@@ -354,10 +355,10 @@
       background:radial-gradient(ellipse at 50% 50%,rgba(6,182,212,0.06) 0%,transparent 70%);
       pointer-events:none; z-index:1;
     }
-    #globe-canvas { display:block; position:relative; z-index:2; margin:0 auto; }
+    #globe-canvas { display:block; position:relative; z-index:2; margin:0 auto; max-width:100%; height:auto; }
     .globe-label {
       text-align:center; font-family:'JetBrains Mono',monospace;
-      font-size:9.5px; color:var(--text-dim); letter-spacing:1.2px; margin-bottom:20px;
+      font-size:9px; color:var(--text-dim); letter-spacing:1px; margin-bottom:12px;
       text-transform:uppercase; padding-top:6px;
     }
     .globe-label span { color:rgba(6,182,212,0.5); }
@@ -397,11 +398,11 @@
       color:#f87171; text-align:center; min-height:16px;
       margin-top:-4px; margin-bottom:8px; letter-spacing:0.3px;
     }
-    .divider { display:flex; align-items:center; gap:12px; margin:4px 0 18px; }
+    .divider { display:flex; align-items:center; gap:12px; margin:4px 0 10px; }
     .divider-line { flex:1; height:1px; background:rgba(255,255,255,0.05); }
     .divider-text { font-size:10px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; letter-spacing:1.5px; text-transform:uppercase; }
     .qr-tabs {
-      display:flex; background:rgba(8,8,8,0.6); border-radius:14px; padding:3px; margin-bottom:16px;
+      display:flex; background:rgba(8,8,8,0.6); border-radius:14px; padding:3px; margin-bottom:10px;
       box-shadow:inset 0 0 0 1px rgba(255,255,255,0.06);
     }
     .qr-tab {
@@ -413,11 +414,11 @@
     .qr-panel { display:none; text-align:center; }
     .qr-panel.active { display:block; }
     .qr-placeholder { font-size:12px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; padding:20px 0; letter-spacing:0.3px; }
-    #qr-output { display:flex; justify-content:center; margin-bottom:10px; }
+    #qr-output { display:flex; justify-content:center; margin-bottom:6px; }
     #qr-output canvas, #qr-output img { border-radius:12px; background:#fff; padding:10px; box-shadow:0 0 0 1px rgba(255,255,255,0.1),0 8px 32px rgba(0,0,0,0.4); }
     .qr-label { font-size:10px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; letter-spacing:0.8px; text-transform:uppercase; }
     #scanner-wrap {
-      position:relative; width:200px; height:200px; margin:0 auto 10px; border-radius:16px; overflow:hidden;
+      position:relative; width:130px; height:130px; margin:0 auto 6px; border-radius:16px; overflow:hidden;
       background:rgba(8,8,8,0.8); box-shadow:inset 0 0 0 1px rgba(6,182,212,0.15);
     }
     #scanner-video { width:100%; height:100%; object-fit:cover; display:block; }
@@ -952,6 +953,48 @@
         transform: translateX(50%);
       }
       #files-panel-toggle.visible { display: flex; }
+      #home-screen {
+        padding: 20px 12px;
+      }
+      .card-inner {
+        padding: 20px 16px 16px;
+      }
+      .hero-heading {
+        font-size: 22px;
+        margin-bottom: 4px;
+      }
+      .hero-sub {
+        font-size: 11.5px;
+        margin-bottom: 14px;
+        line-height: 1.4;
+      }
+      .otp-box {
+        width: 52px;
+        height: 56px;
+        font-size: 24px;
+      }
+      .globe-wrap {
+        margin: 8px 0 2px;
+      }
+      .globe-label {
+        font-size: 8.5px;
+        margin-bottom: 12px;
+        letter-spacing: 0.8px;
+      }
+      .divider {
+        margin: 4px 0 10px;
+      }
+      .qr-tabs {
+        margin-bottom: 10px;
+      }
+      #qr-output {
+        margin-bottom: 6px;
+      }
+      #scanner-wrap {
+        width: 140px;
+        height: 140px;
+        margin: 0 auto 6px;
+      }
     }
 
     .panel-header {
@@ -1509,7 +1552,7 @@
         <input class="otp-box" id="otp-3" maxlength="1" inputmode="numeric" autocomplete="off" />
       </div>
       <div class="globe-wrap">
-        <canvas id="globe-canvas" width="388" height="150"></canvas>
+        <canvas id="globe-canvas" width="388" height="120"></canvas>
       </div>
       <div class="globe-label"><span>◉</span> Same network · same room · same nodes</div>
       <button class="btn-primary" id="btn-join">Join Room</button>
@@ -2375,7 +2418,7 @@
   const gc=document.getElementById('globe-canvas');
   const gCtx=gc.getContext('2d');
   const GW=gc.width,GH=gc.height,GCX=GW/2,GCY=GH/2;
-  const RADIUS=62,NODE_COUNT=90;
+  const RADIUS=50,NODE_COUNT=90;
   const nodes3D=[];
   const PHI=Math.PI*(3-Math.sqrt(5));
   for(let i=0;i<NODE_COUNT;i++){
@@ -2749,6 +2792,9 @@
   function addFiles(files) {
     for(const f of files) fileQueue.push({file:f,name:f.name,size:f.size,icon:getFileIcon(f.name)});
     renderQueue();
+    if (typeof window.onFilesSelected === 'function') {
+      window.onFilesSelected(fileQueue.map(f => f.file));
+    }
   }
   function renderQueue() {
     const list=document.getElementById('queue-list'),wrap=document.getElementById('queue-wrap'),dz=document.getElementById('drop-zone');
@@ -2768,6 +2814,9 @@
   window.removeQueueItem=function(idx){
     fileQueue.splice(idx,1); renderQueue();
     if(fileQueue.length===0) document.getElementById('control-panel').classList.remove('visible');
+    if (typeof window.onFilesSelected === 'function') {
+      window.onFilesSelected(fileQueue.map(f => f.file));
+    }
   };
 
   const fileInput=document.getElementById('file-input');
@@ -2907,10 +2956,12 @@
   window.sendAnotherFile=function(){
     document.getElementById('success-screen').classList.remove('visible');
     fileQueue=[]; resetSenderUI();
+    if (typeof window.onFilesSelected === 'function') window.onFilesSelected([]);
   };
   window.leaveRoom=function(){
     if(transferRafId) cancelAnimationFrame(transferRafId);
     isTransferring=false; sphereFormed=false; fileQueue=[];
+    if (typeof window.onFilesSelected === 'function') window.onFilesSelected([]);
     document.getElementById('success-screen').classList.remove('visible');
     document.getElementById('progress-screen').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
@@ -3196,7 +3247,7 @@
     requestAnimationFrame(step);
   }
 
-  function startReceive(filename, totalBytes) {
+  function startReceive(filename, totalBytes, isFake = false) {
     if (rxTransferActive) return;
     rxTransferActive = true;
     rxProgress = 0; rxSpeed = 0;
@@ -3211,52 +3262,54 @@
     // Animate sphere coming in from left
     animateIncomingSphere(() => {
       // Sphere consumed — show receive progress ring
-      showReceiveProgress(filename, totalBytes);
+      showReceiveProgress(filename, totalBytes, isFake);
     });
   }
 
-  function showReceiveProgress(filename, totalBytes) {
+  function showReceiveProgress(filename, totalBytes, isFake = false) {
     document.getElementById('receive-filename').textContent = filename;
     document.getElementById('receive-stats').textContent = '— Receiving…';
     document.getElementById('receive-progress').classList.add('visible');
 
-    const baseSpeed = 15 + Math.random() * 12;
-    const totalDuration = Math.max(4000, Math.min(13000, (totalBytes/1048576/baseSpeed)*1000));
-    const startTime = Date.now();
-    const speedSamples = [];
+    if (isFake) {
+      const baseSpeed = 15 + Math.random() * 12;
+      const totalDuration = Math.max(4000, Math.min(13000, (totalBytes/1048576/baseSpeed)*1000));
+      const startTime = Date.now();
+      const speedSamples = [];
 
-    function step() {
-      const elapsed = Date.now() - startTime;
-      rxProgress = Math.min(elapsed / totalDuration, 1);
+      function step() {
+        const elapsed = Date.now() - startTime;
+        rxProgress = Math.min(elapsed / totalDuration, 1);
 
-      const jitter = (Math.random() - 0.5) * 4;
-      const instant = Math.max(0.5, baseSpeed + jitter);
-      speedSamples.push(instant);
-      if (speedSamples.length > 5) speedSamples.shift();
-      rxSpeed = speedSamples.reduce((a,b) => a+b, 0) / speedSamples.length;
+        const jitter = (Math.random() - 0.5) * 4;
+        const instant = Math.max(0.5, baseSpeed + jitter);
+        speedSamples.push(instant);
+        if (speedSamples.length > 5) speedSamples.shift();
+        rxSpeed = speedSamples.reduce((a,b) => a+b, 0) / speedSamples.length;
 
-      // Update ring
-      const circumference = 502;
-      const offset = circumference * (1 - rxProgress);
-      document.getElementById('receive-ring').style.strokeDashoffset = offset;
-      document.getElementById('receive-pct').textContent = Math.floor(rxProgress * 100);
+        // Update ring
+        const circumference = 502;
+        const offset = circumference * (1 - rxProgress);
+        document.getElementById('receive-ring').style.strokeDashoffset = offset;
+        document.getElementById('receive-pct').textContent = Math.floor(rxProgress * 100);
 
-      // Update stats
-      const remaining = totalBytes * (1 - rxProgress);
-      const etaSec = rxSpeed > 0 ? remaining / (rxSpeed * 1048576) : 0;
-      const etaStr = etaSec < 5 ? '~' + Math.ceil(etaSec) + 's' : '~' + Math.ceil(etaSec) + 's';
-      document.getElementById('receive-stats').textContent = rxSpeed.toFixed(1) + ' MB/s · ' + etaStr + ' remaining';
+        // Update stats
+        const remaining = totalBytes * (1 - rxProgress);
+        const etaSec = rxSpeed > 0 ? remaining / (rxSpeed * 1048576) : 0;
+        const etaStr = etaSec < 5 ? '~' + Math.ceil(etaSec) + 's' : '~' + Math.ceil(etaSec) + 's';
+        document.getElementById('receive-stats').textContent = rxSpeed.toFixed(1) + ' MB/s · ' + etaStr + ' remaining';
 
-      if (rxProgress < 1) {
-        rxRafId = requestAnimationFrame(step);
-      } else {
-        rxProgress = 1;
-        document.getElementById('receive-ring').style.strokeDashoffset = 0;
-        document.getElementById('receive-pct').textContent = '100';
-        setTimeout(() => completeReceive(filename, totalBytes), 500);
+        if (rxProgress < 1) {
+          rxRafId = requestAnimationFrame(step);
+        } else {
+          rxProgress = 1;
+          document.getElementById('receive-ring').style.strokeDashoffset = 0;
+          document.getElementById('receive-pct').textContent = '100';
+          setTimeout(() => completeReceive(filename, totalBytes), 500);
+        }
       }
+      rxRafId = requestAnimationFrame(step);
     }
-    rxRafId = requestAnimationFrame(step);
   }
 
   function completeReceive(filename, totalBytes, url) {
@@ -3360,9 +3413,9 @@
   // Keep local rxMeta ref for updateReceiverProgress ETA calc
   let rxMeta = null;
   const _origStartReceive = startReceive;
-  startReceive = function(filename, totalBytes) {
+  startReceive = function(filename, totalBytes, isFake) {
     rxMeta = { name: filename, size: totalBytes };
-    _origStartReceive(filename, totalBytes);
+    _origStartReceive(filename, totalBytes, isFake);
   };
 
   /* ── LEAVE RECEIVER ── */

@@ -73,6 +73,18 @@ export default function App() {
   const iceWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isGestureDropRef = useRef(false);
 
+  const clientIdRef = useRef<string>("");
+  if (!clientIdRef.current) {
+    let id = typeof window !== 'undefined' ? sessionStorage.getItem('nexus_client_id') : null;
+    if (!id) {
+      id = 'client_' + Math.random().toString(36).substring(2, 15);
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('nexus_client_id', id);
+      }
+    }
+    clientIdRef.current = id;
+  }
+
   useEffect(() => {
     if (typeof Audio !== 'undefined') {
       const a = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
@@ -169,7 +181,7 @@ export default function App() {
       setIsSocketConnected(true);
       (window as any).Signaling?.onConnect?.();
       if (roomCodeRef.current.length === 4) {
-        socket.emit("join-room", roomCodeRef.current);
+        socket.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
       }
     });
 
@@ -486,7 +498,7 @@ export default function App() {
 
       attempts++;
       console.warn(`[HealthCheck] Joined but not P2P connected — auto-rejoin attempt ${attempts}/${MAX_ATTEMPTS}`);
-      socketRef.current.emit('join-room', roomCodeRef.current);
+      socketRef.current.emit('join-room', { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
     }, RETRY_INTERVAL_MS);
 
     return () => clearInterval(interval);
@@ -979,7 +991,7 @@ export default function App() {
 
     if (socketRef.current && roomCodeRef.current.length === 4) {
       setTimeout(() => {
-        socketRef.current?.emit("join-room", roomCodeRef.current);
+        socketRef.current?.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
       }, 100);
     }
   }, []);
@@ -1040,7 +1052,7 @@ export default function App() {
               pendingCandidatesRef.current = [];
             }
             if (socketRef.current?.connected && roomCodeRef.current.length === 4) {
-              socketRef.current.emit('join-room', roomCodeRef.current);
+              socketRef.current.emit('join-room', { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
             }
           }
         }, 10000);
@@ -1078,7 +1090,7 @@ export default function App() {
         setTimeout(() => {
           if (!connectedRef.current && socketRef.current?.connected && roomCodeRef.current.length === 4) {
             console.log("[ICE] Re-emitting join-room to restart signaling...");
-            socketRef.current.emit("join-room", roomCodeRef.current);
+            socketRef.current.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
           }
         }, 1500);
       }
@@ -1286,6 +1298,10 @@ export default function App() {
               }
             );
             newEngine.initReceiver(payload.file);
+
+            if (typeof (window as any).triggerIncomingSphere === 'function') {
+              (window as any).triggerIncomingSphere(payload.file.name, payload.file.size);
+            }
 
             // Save location is chosen in handleDropAction (button) or falls through to
             // OPFS (gesture path). Do not call showSaveFilePicker here — FILE_META
@@ -1557,7 +1573,7 @@ export default function App() {
   const handleJoin = async () => {
     if (roomCode.length === 4 && socketRef.current) {
       console.log("Joining room:", roomCode);
-      socketRef.current.emit("join-room", roomCode);
+      socketRef.current.emit("join-room", { roomCode, clientId: clientIdRef.current });
 
       if (backgroundAudioRef.current) {
         try {
@@ -1725,12 +1741,12 @@ export default function App() {
 
     (window as any)._socketJoinRoom = (code: string) => {
       setRoomCode(code);
-      socketRef.current?.emit('join-room', code);
+      socketRef.current?.emit('join-room', { roomCode: code, clientId: clientIdRef.current });
     };
 
     (window as any)._socketCreateRoom = (code: string) => {
       setRoomCode(code);
-      socketRef.current?.emit('join-room', code);
+      socketRef.current?.emit('join-room', { roomCode: code, clientId: clientIdRef.current });
     };
 
     // ── file-input: sync React state so App.tsx knows which files to send ──
