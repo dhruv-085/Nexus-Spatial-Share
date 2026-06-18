@@ -2632,6 +2632,14 @@
     document.getElementById('home-screen').classList.add('hidden');
     document.getElementById('card-bloom').style.display = 'none';
 
+    // Hide sender and transfer/progress screens to prevent overlap
+    document.getElementById('sender-screen').classList.remove('visible');
+    document.getElementById('progress-screen').classList.remove('visible');
+    document.getElementById('success-screen').classList.remove('visible');
+    document.getElementById('receive-progress').classList.remove('visible');
+    document.getElementById('receive-success').classList.remove('visible');
+    document.getElementById('transfer-error-screen').classList.remove('visible');
+
     // Re-wire Leave button to leaveReceiver once that IIFE has defined it
     document.getElementById('btn-leave').onclick = () => {
       if (typeof window.leaveReceiver === 'function') window.leaveReceiver();
@@ -2640,9 +2648,9 @@
     // NOTE: gravity well does NOT start here — particles drift freely until a file arrives
     setTimeout(() => {
       document.getElementById('receiver-screen').classList.add('visible');
-      document.getElementById('btn-simulate').classList.add('visible');
-      document.getElementById('files-panel-toggle').classList.add('visible');
-      document.getElementById('rx-dev-panel').classList.add('visible');
+      document.getElementById('btn-simulate')?.classList.add('visible');
+      document.getElementById('files-panel-toggle')?.classList.add('visible');
+      document.getElementById('rx-dev-panel')?.classList.add('visible');
     }, 340);
   };
   function showRoomError(msg){
@@ -2690,11 +2698,27 @@
     document.getElementById('logo-home').style.display = 'none';
     document.getElementById('logo-sender').style.display = 'flex';
     document.getElementById('top-bar-center').style.display = 'flex';
+    
+    // Set top bar center to a clean state
+    document.getElementById('top-bar-center').innerHTML =
+      '<div class="connected-dot green"></div><span>Room Ready</span>';
     document.getElementById('top-bar-home-right').style.display = 'none';
     document.getElementById('top-bar-sender-right').style.display = 'flex';
     document.getElementById('room-code-display').textContent = 'Room ' + code;
     document.getElementById('card-bloom').style.display = 'none';
     document.getElementById('home-screen').classList.add('hidden');
+
+    // Hide receiver and progress/success screens to prevent overlap
+    document.getElementById('receiver-screen').classList.remove('visible');
+    document.getElementById('btn-simulate')?.classList.remove('visible');
+    document.getElementById('files-panel-toggle')?.classList.remove('visible');
+    document.getElementById('rx-dev-panel')?.classList.remove('visible');
+    document.getElementById('progress-screen').classList.remove('visible');
+    document.getElementById('success-screen').classList.remove('visible');
+    document.getElementById('receive-progress').classList.remove('visible');
+    document.getElementById('receive-success').classList.remove('visible');
+    document.getElementById('transfer-error-screen').classList.remove('visible');
+
     setTimeout(() => document.getElementById('sender-screen').classList.add('visible'), 320);
   };
 
@@ -3011,8 +3035,8 @@
     // NOTE: gravity well does NOT start here — particles drift freely until a file arrives
     setTimeout(() => {
       document.getElementById('receiver-screen').classList.add('visible');
-      document.getElementById('btn-simulate').classList.add('visible');
-      document.getElementById('files-panel-toggle').classList.add('visible');
+      document.getElementById('btn-simulate')?.classList.add('visible');
+      document.getElementById('files-panel-toggle')?.classList.add('visible');
     }, 340);
   }
 
@@ -3345,10 +3369,10 @@
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
     document.getElementById('receiver-screen').classList.remove('visible');
-    document.getElementById('btn-simulate').classList.remove('visible');
-    document.getElementById('files-panel-toggle').classList.remove('visible');
+    document.getElementById('btn-simulate')?.classList.remove('visible');
+    document.getElementById('files-panel-toggle')?.classList.remove('visible');
     document.getElementById('files-panel').classList.remove('open');
-    document.getElementById('rx-dev-panel').classList.remove('visible');
+    document.getElementById('rx-dev-panel')?.classList.remove('visible');
 
     // Reset btn-leave back to default (sender's leaveRoom will re-bind its listener)
     document.getElementById('btn-leave').onclick = null;
@@ -3847,13 +3871,14 @@
 
     /** Socket disconnected from signaling server */
     onDisconnect() {
+      const wasConnected = sigConnected;
       sigConnected  = false;
       peerConnected = false;
       webrtcOpen    = false;
       dotSignaling.classList.remove('green','amber');
       dotWebRTC.classList.remove('green');
       updateStatusPill();
-      if (window.Toast) Toast.show('Cannot reach signaling server. Check connection.', 'error');
+      if (wasConnected && window.Toast) Toast.show('Cannot reach signaling server. Check connection.', 'error');
     },
 
     /** Server confirmed peer joined the room; role = 'sender' | 'receiver' */

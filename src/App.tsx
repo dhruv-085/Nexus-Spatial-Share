@@ -144,7 +144,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const SERVER_URL = window.location.protocol + '//' + window.location.hostname + ':3000';
+    const SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+      ? `${window.location.protocol}//${window.location.hostname}:3000`
+      : `${window.location.protocol}//${window.location.host}`;
     const socket = io(SERVER_URL);
     socketRef.current = socket;
 
@@ -196,18 +198,20 @@ export default function App() {
         }
       } else if (status === 'ready') {
         setJoined(true);
+        // Both clients transition to the shared workspace (transitionToSender)
+        if ((window as any).transitionToSender) {
+           (window as any).transitionToSender(code || roomCodeRef.current);
+        }
+        if (connectedRef.current) {
+          console.log("[Signaling] Already P2P connected, skipping WebRTC setup on room status update.");
+          return;
+        }
         if (role === 'offerer') {
-          if ((window as any).transitionToReceiver) {
-             (window as any).transitionToReceiver(code || roomCodeRef.current);
-          }
           if ((window as any).Signaling?.onPeerJoined) {
             (window as any).Signaling.onPeerJoined('receiver');
           }
           await setupOfferer();
         } else {
-          if ((window as any).transitionToSender) {
-             (window as any).transitionToSender(code || roomCodeRef.current);
-          }
           if ((window as any).Signaling?.onPeerJoined) {
             (window as any).Signaling.onPeerJoined('sender');
           }
@@ -314,6 +318,11 @@ export default function App() {
             console.log('[global-lock] Resent FILE_META as guaranteed delivery');
           }
         }
+      } else {
+        // We are the receiver! Transition to receiver interface.
+        if ((window as any).transitionToReceiver) {
+          (window as any).transitionToReceiver(roomCodeRef.current);
+        }
       }
     });
 
@@ -338,33 +347,24 @@ export default function App() {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+
+      // Transition back to shared workspace if not on a success screen
+      const isSuccessVisible = document.getElementById('success-screen')?.classList.contains('visible') || 
+                               document.getElementById('receive-success')?.classList.contains('visible');
+      if (!isSuccessVisible) {
+        if ((window as any).transitionToSender) {
+          (window as any).transitionToSender(roomCodeRef.current);
+        }
+        if ((window as any).resetSenderUI) {
+          (window as any).resetSenderUI();
+        }
+        if ((window as any)._ch8CleanUp) {
+          (window as any)._ch8CleanUp();
+        }
+      }
     });
 
-    socket.on("disconnect", () => {
-      console.log("Disconnected from signaling server");
-      if (backgroundAudioRef.current) {
-        backgroundAudioRef.current.pause();
-      }
-      setIsSocketConnected(false);
-      setIsGrabbedPermanent(false);
-      isGrabbedPermanentRef.current = false;
-      if (transferEngineRef.current) {
-        transferEngineRef.current.cancel();
-        transferEngineRef.current = null;
-      }
-      isTransferringRef.current = false;
-      isTransferringFastRef.current = false;
-      setIsTransferring(false);
-      transferRequestedRef.current = false;
 
-      if (pcRef.current) {
-        pcRef.current.close();
-        pcRef.current = null;
-      }
-      connRef.current = [];
-      controlConnRef.current = [];
-      setConnected(false);
-    });
 
     return () => {
       socket.disconnect();
@@ -584,6 +584,16 @@ export default function App() {
       console.log("CONSOLE: handleGrabAction aborted - no file selected");
       setMessages(prev => [...prev, "ERROR: No file selected. Please select a file first."]);
       return;
+    }
+
+    // Populate file-overlay details for sender
+    const overlay = document.getElementById('file-overlay');
+    const nameEl = document.getElementById('overlay-name');
+    const sizeEl = document.getElementById('overlay-size');
+    if (overlay && nameEl && sizeEl) {
+      nameEl.textContent = fileToSend.name;
+      sizeEl.textContent = formatBytes(fileToSend.size);
+      overlay.classList.add('active');
     }
 
     try {
@@ -883,6 +893,7 @@ export default function App() {
         });
       } else {
         setMessages(prev => [...prev, `SYSTEM: ✓ Saved to folder: ${fileName} directly to disk.`]);
+        (window as any).onFileReceivedSuccess?.({ name: fileName, size: incomingFileRef.current?.size ?? 0, url: null });
       }
     }
   };
@@ -1309,6 +1320,8 @@ export default function App() {
                   }
                   newEngine.setStreamWriter(wr);
                   console.log(`[Stream] Ready → streaming "${payload.file.name}" to OPFS virtual disk`);
+                } else {
+                  opfsFileHandleRef.current = null;
                 }
               } catch (opfsErr) {
                 opfsFileHandleRef.current = null; // failed to set up, clear the ref
@@ -1524,6 +1537,8 @@ export default function App() {
   }, [createPeerConnection, setupDataChannel]);
 
   const setupAnswerer = useCallback(async () => {
+    connRef.current = [];
+    controlConnRef.current = [];
     const pc = createPeerConnection();
 
     pc.ondatachannel = (event) => {
@@ -1602,6 +1617,62 @@ export default function App() {
   };
 
   // --- PHASE 4 BRIDGE HOOKS ---
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(2) + ' GB';
+  };
+
+  // --- FILE OVERLAY UPDATE ON METADATA ---
+  useEffect(() => {
+    const overlay = document.getElementById('file-overlay');
+    const nameEl = document.getElementById('overlay-name');
+    const sizeEl = document.getElementById('overlay-size');
+    if (incomingFile && overlay && nameEl && sizeEl) {
+      nameEl.textContent = incomingFile.name;
+      sizeEl.textContent = formatBytes(incomingFile.size);
+      overlay.classList.add('active');
+    } else if (overlay) {
+      overlay.classList.remove('active');
+    }
+  }, [incomingFile]);
+
+  // --- CONTROL PANEL & BUTTON STATES SYNC ---
+  useEffect(() => {
+    const controlPanel = document.getElementById('control-panel');
+    const btnGrab = document.getElementById('btn-grab');
+    const btnDrop = document.getElementById('btn-drop');
+
+    if (!controlPanel || !btnGrab || !btnDrop) return;
+
+    if (isGlobalLocked) {
+      if (isSource) {
+        // We are the sender and the room is locked (we grabbed). Hide control panel.
+        controlPanel.classList.remove('visible');
+      } else {
+        // We are the receiver and the room is locked (sender grabbed).
+        // Show control panel with Drop button.
+        controlPanel.classList.add('visible');
+        (btnGrab as HTMLButtonElement).style.display = 'none';
+        (btnDrop as HTMLButtonElement).style.display = 'flex';
+        (btnDrop as HTMLButtonElement).disabled = !incomingFile;
+      }
+    } else {
+      // Room is not locked.
+      if (selectedFiles.length > 0) {
+        // We have files selected, show grab button.
+        controlPanel.classList.add('visible');
+        (btnGrab as HTMLButtonElement).style.display = 'flex';
+        (btnGrab as HTMLButtonElement).disabled = false;
+        (btnDrop as HTMLButtonElement).style.display = 'none';
+      } else {
+        // No files selected, hide control panel.
+        controlPanel.classList.remove('visible');
+      }
+    }
+  }, [isGlobalLocked, isSource, selectedFiles, incomingFile]);
+
   useEffect(() => {
     if (isSocketConnected) (window as any).Signaling?.onConnect();
     else (window as any).Signaling?.onDisconnect();
@@ -1672,42 +1743,40 @@ export default function App() {
       console.log("[App.tsx] sendFilesViaWebRTC called (intercepted by App.tsx)");
     };
 
-    // ── btn-grab: trigger real WebRTC grab in App.tsx logic ──
-    document.getElementById('btn-grab')?.addEventListener('click', () => {
+    const handleBtnGrabClick = () => {
       handleGrabAction();
       socketRef.current?.emit('grabbed', roomCodeRef.current);
-    });
+    };
 
-    // ── btn-drop: trigger real WebRTC drop in App.tsx logic ──
-    document.getElementById('btn-drop')?.addEventListener('click', () => {
+    const handleBtnDropClick = () => {
       handleDropAction();
-    });
+    };
 
-    document.getElementById('btn-cancel')?.addEventListener('click', cancelTransfer);
-
-    document.getElementById('btn-leave')?.addEventListener('click', () => {
+    const handleBtnLeaveClick = () => {
       socketRef.current?.emit('dropped', roomCodeRef.current);
       socketRef.current?.emit('leave-room');
+      roomCodeRef.current = ''; // Force update Ref immediately to prevent auto-rejoin in resetWebRTCConnection
+      resetWebRTCConnection();
       setJoined(false);
       setConnected(false);
       setSelectedFiles([]);
       setRoomCode('');
       (window as any).leaveRoom?.();
-    });
+    };
 
-    document.getElementById('btn-download-main')?.addEventListener('click', () => {
+    const handleBtnDownloadMainClick = () => {
       // patched by HTML logic when file received
-    });
+    };
 
-    document.getElementById('btn-rx-leave')?.addEventListener('click', () => {
+    const handleBtnRxLeaveClick = () => {
       (window as any).leaveReceiver?.();
-    });
+    };
 
-    document.getElementById('btn-error-retry')?.addEventListener('click', () => {
+    const handleBtnErrorRetryClick = () => {
       cancelTransfer();
-    });
+    };
 
-    document.getElementById('btn-clear-files')?.addEventListener('click', () => {
+    const handleBtnClearFilesClick = () => {
       if (navigator.storage && navigator.storage.getDirectory) {
         navigator.storage.getDirectory().then(async (root) => {
           try {
@@ -1732,7 +1801,23 @@ export default function App() {
         }).catch(() => {});
       }
       setReceivedFiles([]);
-    });
+    };
+
+    const btnGrab = document.getElementById('btn-grab');
+    const btnDrop = document.getElementById('btn-drop');
+    const btnLeave = document.getElementById('btn-leave');
+    const btnDownloadMain = document.getElementById('btn-download-main');
+    const btnRxLeave = document.getElementById('btn-rx-leave');
+    const btnErrorRetry = document.getElementById('btn-error-retry');
+    const btnClearFiles = document.getElementById('btn-clear-files');
+
+    btnGrab?.addEventListener('click', handleBtnGrabClick);
+    btnDrop?.addEventListener('click', handleBtnDropClick);
+    btnLeave?.addEventListener('click', handleBtnLeaveClick);
+    btnDownloadMain?.addEventListener('click', handleBtnDownloadMainClick);
+    btnRxLeave?.addEventListener('click', handleBtnRxLeaveClick);
+    btnErrorRetry?.addEventListener('click', handleBtnErrorRetryClick);
+    btnClearFiles?.addEventListener('click', handleBtnClearFilesClick);
 
     (window as any)._completeTransferCh3 = () => {
       // Success screen is handled by Ch3
@@ -1740,6 +1825,8 @@ export default function App() {
 
     (window as any)._socketLeaveRoom = () => {
       socketRef.current?.emit('leave-room');
+      roomCodeRef.current = ''; // Force update Ref immediately to prevent auto-rejoin in resetWebRTCConnection
+      resetWebRTCConnection();
       setJoined(false);
       setConnected(false);
       setSelectedFiles([]);
@@ -1748,6 +1835,25 @@ export default function App() {
 
     (window as any)._socketCancelTransfer = () => {
       cancelTransfer();
+    };
+
+    return () => {
+      btnGrab?.removeEventListener('click', handleBtnGrabClick);
+      btnDrop?.removeEventListener('click', handleBtnDropClick);
+      btnLeave?.removeEventListener('click', handleBtnLeaveClick);
+      btnDownloadMain?.removeEventListener('click', handleBtnDownloadMainClick);
+      btnRxLeave?.removeEventListener('click', handleBtnRxLeaveClick);
+      btnErrorRetry?.removeEventListener('click', handleBtnErrorRetryClick);
+      btnClearFiles?.removeEventListener('click', handleBtnClearFilesClick);
+
+      delete (window as any)._socketIsConnected;
+      delete (window as any)._socketJoinRoom;
+      delete (window as any)._socketCreateRoom;
+      delete (window as any).onFilesSelected;
+      delete (window as any).sendFilesViaWebRTC;
+      delete (window as any)._completeTransferCh3;
+      delete (window as any)._socketLeaveRoom;
+      delete (window as any)._socketCancelTransfer;
     };
 
 
