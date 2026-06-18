@@ -2739,6 +2739,12 @@
     if(b<1073741824)return(b/1048576).toFixed(1)+' MB';
     return(b/1073741824).toFixed(2)+' GB';
   }
+  // Security: HTML-escape user/peer-supplied strings before injecting into innerHTML
+  function escapeHTML(str) {
+    return String(str).replace(/[&<>'"/]/g, function(m) {
+      return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;','/':'&#x2F;'}[m]);
+    });
+  }
 
   function addFiles(files) {
     for(const f of files) fileQueue.push({file:f,name:f.name,size:f.size,icon:getFileIcon(f.name)});
@@ -2752,7 +2758,7 @@
     fileQueue.forEach((f,idx)=>{
       const item=document.createElement('div'); item.className='queue-item';
       item.innerHTML='<div class="queue-file-icon">'+f.icon+'</div>'+
-        '<div class="queue-file-info"><div class="queue-file-name">'+f.name+'</div>'+
+        '<div class="queue-file-info"><div class="queue-file-name">'+escapeHTML(f.name)+'</div>'+
         '<div class="queue-file-size">'+fmt(f.size)+'</div></div>'+
         '<button class="queue-remove" onclick="removeQueueItem('+idx+')">\u00d7</button>';
       list.appendChild(item);
@@ -3410,7 +3416,7 @@
       card.innerHTML =
         '<div class="rx-file-icon">' + f.icon + '</div>' +
         '<div class="rx-file-info">' +
-          '<div class="rx-file-name">' + f.name + '</div>' +
+          '<div class="rx-file-name">' + escapeHTML(f.name) + '</div>' +
           '<div class="rx-file-meta">' + fmt(f.size) + ' · ' + timeAgo(f.timestamp) + '</div>' +
         '</div>' +
         '<button class="btn-rx-dl" onclick="rxDownload(' + (rxFiles.length - 1 - idx) + ', this)">DL</button>';
@@ -3536,10 +3542,14 @@
       toast.className = `toast ${type}`;
       toast.dataset.msg = message;
       toast._born = Date.now();
+      // Use escapeHTML to prevent XSS from peer-supplied filenames embedded in toast messages
+      const safeMsg = message.replace(/[&<>'"/]/g, function(m) {
+        return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;','/':'&#x2F;'}[m]);
+      });
       toast.innerHTML = `
         <div class="toast-icon">${ICONS[type] || 'ℹ'}</div>
         <div class="toast-body">
-          <div class="toast-msg">${message}</div>
+          <div class="toast-msg">${safeMsg}</div>
         </div>
         <button class="toast-close" aria-label="Dismiss">×</button>
         <div class="toast-progress"><div class="toast-progress-bar" style="width:100%"></div></div>
