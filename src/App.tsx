@@ -233,6 +233,9 @@ export default function App() {
         }
       } else if (status === 'full') {
         setMessages(prev => [...prev, "SYSTEM: Room is full!"]);
+        if (typeof (window as any).showRoomError === 'function') {
+          (window as any).showRoomError('Room is full.');
+        }
       }
     });
 

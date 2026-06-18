@@ -2689,14 +2689,14 @@
       document.getElementById('rx-dev-panel')?.classList.add('visible');
     }, 340);
   };
-  function showRoomError(msg){
+  window.showRoomError = function showRoomError(msg){
     document.getElementById('join-error').textContent=msg;
     for(let i=0;i<4;i++){setDigit(i,'');dimGlobe(i);}resetGlobe();
     const card=document.getElementById('home-card');
     card.classList.remove('shake');void card.offsetWidth;card.classList.add('shake');
     card.addEventListener('animationend',()=>card.classList.remove('shake'),{once:true});
     setTimeout(()=>boxes[0].focus(),50);
-  }
+  };
   document.getElementById('btn-join').addEventListener('click',joinRoom);
   document.getElementById('btn-create').addEventListener('click',()=>{
     clearError();const code=String(Math.floor(1000+Math.random()*9000));

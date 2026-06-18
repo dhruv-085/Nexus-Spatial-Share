@@ -110,7 +110,8 @@ async function startServer() {
       // use the purge as a safety net for sockets that vanished without firing it.
       const genuinelyDeadPeers = room.peers.filter(peerId => {
         if (peerId === socket.id) return false; // self is never "dead"
-        return io.sockets.sockets.get(peerId) == null; // socket object is gone entirely
+        const peerSocket = io.sockets.sockets.get(peerId);
+        return peerSocket == null || !peerSocket.connected; // socket object is gone entirely or not connected
       });
 
       if (genuinelyDeadPeers.length > 0) {
@@ -272,39 +273,43 @@ async function startServer() {
       const room = rooms.get(roomId);
       if (!room) return;
 
-      // ── Grace-period disconnect handling ─────────────────────────────────────
-      // Mobile devices frequently drop their Socket.IO WebSocket connection and
-      // reconnect via polling (self-signed cert, network switch, background tab).
-      // Instead of instantly destroying the room, wait 12 seconds. If the same
-      // room code is rejoined within that window, the session is preserved.
-      // We give a generous 2 minutes because users browsing files on mobile 
-      // can take a while, and the app goes to background.
-      const GRACE_MS = 120_000;
+      // Immediately remove this socket from the room's active peer lists
+      room.peers = room.peers.filter(id => id !== socket.id);
+      if (room.peerClientIds) {
+        room.peerClientIds.delete(socket.id);
+      }
 
-      console.log(`[Server] ${socket.id} disconnected from room ${roomId} — starting ${GRACE_MS/1000}s grace timer`);
+      // Notify any remaining peers immediately so they reset signaling/P2P
+      room.peers.forEach(peerId => {
+        console.log(`[Server] User ${socket.id} disconnected — notifying remaining peer ${peerId} in room ${roomId}`);
+        io.to(peerId).emit('peer-disconnected');
+        io.to(peerId).emit('room-status', { status: 'waiting', role: 'answerer', code: roomId });
+      });
 
-      // Cancel any existing timer for this room (avoid double-destroy)
-      const existing = pendingDestroyTimers.get(roomId);
-      if (existing) clearTimeout(existing);
+      // If the room is now completely empty, start the grace timer to destroy it
+      if (room.peers.length === 0) {
+        const GRACE_MS = 120_000;
+        console.log(`[Server] Room ${roomId} is empty — starting ${GRACE_MS/1000}s grace timer to destroy it`);
+        
+        const existing = pendingDestroyTimers.get(roomId);
+        if (existing) clearTimeout(existing);
 
-      const timer = setTimeout(() => {
-        pendingDestroyTimers.delete(roomId);
-        const currentRoom = rooms.get(roomId);
-        if (!currentRoom) return; // already cleaned up
+        const timer = setTimeout(() => {
+          pendingDestroyTimers.delete(roomId);
+          rooms.delete(roomId);
+          console.log(`[Server] Room ${roomId} destroyed after grace period`);
+        }, GRACE_MS);
 
-        // Notify remaining peers
-        currentRoom.peers.forEach(peerId => {
-          if (peerId !== socket.id) {
-            console.log(`[Server] Grace expired — notifying ${peerId} of peer disconnect in room ${roomId}`);
-            io.to(peerId).emit('peer-disconnected');
-          }
-        });
-
-        rooms.delete(roomId);
-        console.log(`[Server] Room ${roomId} destroyed after grace period`);
-      }, GRACE_MS);
-
-      pendingDestroyTimers.set(roomId, timer);
+        pendingDestroyTimers.set(roomId, timer);
+      } else {
+        // Cancel any pending destroy timer since the room is not empty
+        const existing = pendingDestroyTimers.get(roomId);
+        if (existing) {
+          clearTimeout(existing);
+          pendingDestroyTimers.delete(roomId);
+          console.log(`[Server] Room ${roomId} is active — cancelled pending destroy timer`);
+        }
+      }
     });
   });
 
