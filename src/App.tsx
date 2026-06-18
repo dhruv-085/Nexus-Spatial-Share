@@ -203,16 +203,18 @@ export default function App() {
 
     socket.on("room-status", async ({ status, role, code }) => {
       console.log(`[Signaling] Room status: ${status}, role: ${role}`);
+      const codeStr = typeof code === 'object' ? '' : String(code || '');
+      const finalCode = codeStr || roomCodeRef.current;
       if (status === 'waiting') {
         setJoined(true);
         if ((window as any).transitionToSender) {
-           (window as any).transitionToSender(code || roomCodeRef.current);
+           (window as any).transitionToSender(finalCode);
         }
       } else if (status === 'ready') {
         setJoined(true);
         // Both clients transition to the shared workspace (transitionToSender)
         if ((window as any).transitionToSender) {
-           (window as any).transitionToSender(code || roomCodeRef.current);
+           (window as any).transitionToSender(finalCode);
         }
         if (connectedRef.current) {
           console.log("[Signaling] Already P2P connected, skipping WebRTC setup on room status update.");
@@ -1456,6 +1458,11 @@ export default function App() {
                 console.log("CONSOLE: All files sent. Emitting 'dropped' to unlock room.");
                 socketRef.current.emit("dropped", roomCodeRef.current);
               }
+
+              // Call success screen trigger in Ch3
+              if (typeof (window as any)._completeTransferCh3 === 'function') {
+                (window as any)._completeTransferCh3();
+              }
             }
 
           } else if (payload.type === "ALL_FILES_DONE") {
@@ -1696,8 +1703,11 @@ export default function App() {
 
   useEffect(() => {
     if (joined && roomCode) {
-      (window as any).Signaling?.setRoomCode(roomCode);
-      (window as any).transitionToSender?.(roomCode);
+      const safeCode = typeof roomCode === 'object' ? '' : String(roomCode);
+      if (safeCode) {
+        (window as any).Signaling?.setRoomCode(safeCode);
+        (window as any).transitionToSender?.(safeCode);
+      }
     }
   }, [joined, roomCode]);
 
@@ -1835,9 +1845,7 @@ export default function App() {
     btnErrorRetry?.addEventListener('click', handleBtnErrorRetryClick);
     btnClearFiles?.addEventListener('click', handleBtnClearFilesClick);
 
-    (window as any)._completeTransferCh3 = () => {
-      // Success screen is handled by Ch3
-    };
+    // Real complete transfer callback remains intact (handled by Ch3 in index.html)
 
     (window as any)._socketLeaveRoom = () => {
       socketRef.current?.emit('leave-room');
