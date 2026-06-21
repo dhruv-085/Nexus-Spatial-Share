@@ -799,19 +799,7 @@
       92%          { opacity: 1; }
     }
 
-    /* ── SIMULATE BUTTON (dev/demo only, bottom-left) ── */
-    #btn-simulate {
-      position: fixed; bottom: 52px; left: 24px; z-index: 30;
-      display: none;
-      background: rgba(8,8,10,0.75); backdrop-filter: blur(20px);
-      border: none; border-radius: 100px; padding: 11px 20px;
-      color: var(--text-dim); cursor: pointer;
-      font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600;
-      box-shadow: inset 0 0 0 1px rgba(140,231,255,0.2), 0 8px 32px rgba(0,0,0,0.5);
-      transition: all 0.2s; letter-spacing: 0.3px;
-    }
-    #btn-simulate:hover { color: var(--text); background: rgba(140,231,255,0.08); box-shadow: inset 0 0 0 1px rgba(140,231,255,0.45), 0 8px 32px rgba(0,0,0,0.5); }
-    #btn-simulate.visible { display: block; }
+
 
     /* ── RECEIVE PROGRESS ── */
     #receive-progress {
@@ -2712,7 +2700,6 @@
     // NOTE: gravity well does NOT start here — particles drift freely until a file arrives
     setTimeout(() => {
       document.getElementById('receiver-screen').classList.add('visible');
-      document.getElementById('btn-simulate')?.classList.add('visible');
       document.getElementById('files-panel-toggle')?.classList.add('visible');
       document.getElementById('rx-dev-panel')?.classList.add('visible');
     }, 340);
@@ -2784,7 +2771,6 @@
 
     // Hide receiver and progress/success screens to prevent overlap
     document.getElementById('receiver-screen').classList.remove('visible');
-    document.getElementById('btn-simulate')?.classList.remove('visible');
     document.getElementById('files-panel-toggle')?.classList.remove('visible');
     document.getElementById('rx-dev-panel')?.classList.remove('visible');
     document.getElementById('progress-screen').classList.remove('visible');
@@ -2860,6 +2846,12 @@
   /* ── GRAB: sphere forms immediately, then transfer starts ── */
   document.getElementById('btn-grab').addEventListener('click', () => {
     if(fileQueue.length===0) return;
+    const isRealSocket = window._socketIsConnected && window._socketIsConnected();
+    if (!isRealSocket) {
+      Toast.show('No peer connected. Connect a peer to transfer files.', 'warning');
+      return;
+    }
+
     sphereFormed = true;
     isTransferring = true;
     currentProgress = 0; currentSpeed = 0;
@@ -2875,34 +2867,28 @@
     // Brief shockwave on grab then start transfer
     startShockwave(CX(), CY());
 
-    // Use real WebRTC if available, else fall back to fake demo
     setTimeout(() => {
-      const isRealSocket = window._socketIsConnected && window._socketIsConnected();
-      if (isRealSocket) {
-        // Real WebRTC backend is handling this in App.tsx
-        console.log("[index.html] Real backend active, showing progress screen.");
-        const ps = document.getElementById('progress-screen');
-        if (ps) {
-          // Initialize progress DOM visuals
-          const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
-          const fileLabel = fileQueue.length > 1 ? `File 1 of ${fileQueue.length}` : '';
-          const fileLabelEl = document.getElementById('progress-file-label');
-          if (fileLabelEl) fileLabelEl.textContent = fileLabel;
-          
-          const filenameEl = document.getElementById('progress-filename');
-          if (filenameEl) {
-            filenameEl.textContent = fileQueue.length > 1 ? `Sending ${fileQueue.length} files...` : firstName;
-          }
-          const statsEl = document.getElementById('progress-stats');
-          if (statsEl) statsEl.textContent = '— Sending…';
-          
-          if (typeof window.updateSenderProgress === 'function') {
-            window.updateSenderProgress(0, 0);
-          }
-          ps.classList.add('visible');
+      // Real WebRTC backend is handling this in App.tsx
+      console.log("[index.html] Real backend active, showing progress screen.");
+      const ps = document.getElementById('progress-screen');
+      if (ps) {
+        // Initialize progress DOM visuals
+        const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
+        const fileLabel = fileQueue.length > 1 ? `File 1 of ${fileQueue.length}` : '';
+        const fileLabelEl = document.getElementById('progress-file-label');
+        if (fileLabelEl) fileLabelEl.textContent = fileLabel;
+        
+        const filenameEl = document.getElementById('progress-filename');
+        if (filenameEl) {
+          filenameEl.textContent = fileQueue.length > 1 ? `Sending ${fileQueue.length} files...` : firstName;
         }
-      } else {
-        startFakeTransfer();
+        const statsEl = document.getElementById('progress-stats');
+        if (statsEl) statsEl.textContent = '— Sending…';
+        
+        if (typeof window.updateSenderProgress === 'function') {
+          window.updateSenderProgress(0, 0);
+        }
+        ps.classList.add('visible');
       }
     }, 500);
   });
@@ -2937,66 +2923,7 @@
   /* Expose completeTransfer so Ch7 DataChannel 'eof' can trigger it */
   window._completeTransferCh3 = function() { completeTransfer(); };
 
-  /* ── FAKE TRANSFER (used when no real peer connected) ── */
-  function startFakeTransfer() {
-    const totalBytes = fileQueue.reduce((s,f)=>s+f.size,0) || (80*1048576);
-    const baseSpeed = 18 + Math.random() * 10;
-    const totalDuration = Math.max(5000, Math.min(14000, (totalBytes/1048576/baseSpeed)*1000));
-    const startTime = Date.now();
-    const speedSamples = [];
-    currentProgress = 0;
-    let currentETA = '';
 
-    // Set filename label
-    const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
-    const fileLabel = fileQueue.length > 1 ? `File 1 of ${fileQueue.length}` : '';
-    document.getElementById('progress-file-label').textContent = fileLabel;
-
-    // Show progress-screen
-    const ps = document.getElementById('progress-screen');
-    ps.classList.add('visible');
-
-    // Start outward repeller well
-    ParticleSystem.setGravityWell(CX(), CY(), 0.5, true);
-
-    // Wire getters so particle system reads live values each frame
-    window._PS_getETA = () => currentETA;
-    ParticleSystem.startTransfer(
-      () => currentProgress,
-      () => currentSpeed
-    );
-
-    function step() {
-      const elapsed = Date.now() - startTime;
-      currentProgress = Math.min(elapsed / totalDuration, 1);
-      const jitter = (Math.random()-0.5)*5;
-      const instant = Math.max(0.5, baseSpeed + jitter);
-      speedSamples.push(instant);
-      if(speedSamples.length>5) speedSamples.shift();
-      currentSpeed = speedSamples.reduce((a,b)=>a+b,0)/speedSamples.length;
-
-      // Update sender progress in DOM
-      window.updateSenderProgress(currentProgress, currentSpeed);
-
-      // Compute ETA string
-      if(currentSpeed > 0 && currentProgress < 1) {
-        const remainingBytes = totalBytes * (1 - currentProgress);
-        const etaSec = remainingBytes / (currentSpeed * 1048576);
-        currentETA = etaSec < 2 ? '<1s remaining' : '~' + Math.ceil(etaSec) + 's remaining';
-      } else {
-        currentETA = '';
-      }
-
-      if(currentProgress < 1){
-        transferRafId = requestAnimationFrame(step);
-      } else {
-        currentProgress = 1;
-        currentETA = '';
-        setTimeout(completeTransfer, 700);
-      }
-    }
-    transferRafId = requestAnimationFrame(step);
-  }
 
   function completeTransfer() {
     if(transferRafId) cancelAnimationFrame(transferRafId);
@@ -3206,7 +3133,6 @@
     // NOTE: gravity well does NOT start here — particles drift freely until a file arrives
     setTimeout(() => {
       document.getElementById('receiver-screen').classList.add('visible');
-      document.getElementById('btn-simulate')?.classList.add('visible');
       document.getElementById('files-panel-toggle')?.classList.add('visible');
     }, 340);
   }
@@ -3361,7 +3287,7 @@
     requestAnimationFrame(step);
   }
 
-  function startReceive(filename, totalBytes, isFake = false) {
+  function startReceive(filename, totalBytes) {
     if (rxTransferActive) return;
     rxTransferActive = true;
     rxProgress = 0; rxSpeed = 0;
@@ -3376,54 +3302,14 @@
     // Animate sphere coming in from left
     animateIncomingSphere(() => {
       // Sphere consumed — show receive progress ring
-      showReceiveProgress(filename, totalBytes, isFake);
+      showReceiveProgress(filename, totalBytes);
     });
   }
 
-  function showReceiveProgress(filename, totalBytes, isFake = false) {
+  function showReceiveProgress(filename, totalBytes) {
     document.getElementById('receive-filename').textContent = filename;
     document.getElementById('receive-stats').textContent = '— Receiving…';
     document.getElementById('receive-progress').classList.add('visible');
-
-    if (isFake) {
-      const baseSpeed = 15 + Math.random() * 12;
-      const totalDuration = Math.max(4000, Math.min(13000, (totalBytes/1048576/baseSpeed)*1000));
-      const startTime = Date.now();
-      const speedSamples = [];
-
-      function step() {
-        const elapsed = Date.now() - startTime;
-        rxProgress = Math.min(elapsed / totalDuration, 1);
-
-        const jitter = (Math.random() - 0.5) * 4;
-        const instant = Math.max(0.5, baseSpeed + jitter);
-        speedSamples.push(instant);
-        if (speedSamples.length > 5) speedSamples.shift();
-        rxSpeed = speedSamples.reduce((a,b) => a+b, 0) / speedSamples.length;
-
-        // Update ring
-        const circumference = 502;
-        const offset = circumference * (1 - rxProgress);
-        document.getElementById('receive-ring').style.strokeDashoffset = offset;
-        document.getElementById('receive-pct').textContent = Math.floor(rxProgress * 100);
-
-        // Update stats
-        const remaining = totalBytes * (1 - rxProgress);
-        const etaSec = rxSpeed > 0 ? remaining / (rxSpeed * 1048576) : 0;
-        const etaStr = etaSec < 5 ? '~' + Math.ceil(etaSec) + 's' : '~' + Math.ceil(etaSec) + 's';
-        document.getElementById('receive-stats').textContent = rxSpeed.toFixed(1) + ' MB/s · ' + etaStr + ' remaining';
-
-        if (rxProgress < 1) {
-          rxRafId = requestAnimationFrame(step);
-        } else {
-          rxProgress = 1;
-          document.getElementById('receive-ring').style.strokeDashoffset = 0;
-          document.getElementById('receive-pct').textContent = '100';
-          setTimeout(() => completeReceive(filename, totalBytes), 500);
-        }
-      }
-      rxRafId = requestAnimationFrame(step);
-    }
   }
 
   function completeReceive(filename, totalBytes, url) {
@@ -3528,9 +3414,9 @@
   // Keep local rxMeta ref for updateReceiverProgress ETA calc
   let rxMeta = null;
   const _origStartReceive = startReceive;
-  startReceive = function(filename, totalBytes, isFake) {
+  startReceive = function(filename, totalBytes) {
     rxMeta = { name: filename, size: totalBytes };
-    _origStartReceive(filename, totalBytes, isFake);
+    _origStartReceive(filename, totalBytes);
   };
 
   /* ── RECEIVER CANCEL CONFIRM ── */
@@ -3553,7 +3439,6 @@
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
     document.getElementById('receiver-screen').classList.remove('visible');
-    document.getElementById('btn-simulate')?.classList.remove('visible');
     document.getElementById('files-panel-toggle')?.classList.remove('visible');
     document.getElementById('files-panel').classList.remove('open');
     document.getElementById('rx-dev-panel')?.classList.remove('visible');
@@ -4405,7 +4290,6 @@
     labelBtn('#btn-dl-all',           'Download all received files');
     labelBtn('#btn-clear-files',      'Clear received files list');
     labelBtn('#files-panel-toggle',   'Toggle received files panel');
-    labelBtn('#btn-simulate',         'Simulate incoming transfer (dev)');
     labelBtn('#rx-dev-toggle',        'Toggle developer test panel');
 
     // Make queue remove buttons announce themselves dynamically
