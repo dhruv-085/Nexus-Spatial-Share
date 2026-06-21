@@ -1695,13 +1695,13 @@
   <div class="progress-ring-wrap">
     <svg width="180" height="180" viewBox="0 0 180 180">
       <defs>
-        <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#06b6d4"/>
-          <stop offset="100%" stop-color="#3b82f6"/>
+        <linearGradient id="receiveRingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#8ce7ff"/>
+          <stop offset="100%" stop-color="#06b6d4"/>
         </linearGradient>
       </defs>
       <circle class="progress-ring-bg" cx="90" cy="90" r="80"/>
-      <circle class="progress-ring-fill" id="progress-ring" cx="90" cy="90" r="80"/>
+      <circle class="receive-ring-fill" id="progress-ring" cx="90" cy="90" r="80"/>
     </svg>
     <div class="progress-ring-center">
       <div class="progress-pct" id="progress-pct">0</div>
@@ -1947,22 +1947,7 @@
   // ── SPHERE SHATTER — per-particle isShattered flag ──
   // (reference-file approach: simpler boolean flag, smooth reformation via pull physics)
 
-  // ── ORBITAL PARTICLE RINGS (replace atom rings) ──
-  // Instead of drawn-on-ovCanvas rings we define N_ORB orbital particles per ring
-  // that live in screen-space and behave like real particles (interactive, trail, glow)
-  const N_ORB_RINGS = 3;
-  const N_ORB_PER_RING = 18; // per ring
-  // Orbital ring definitions (set once when sphere forms)
-  const orbRingDefs = [
-    { rMult:1.30, speed:0.022, tiltX:0.0,  tiltZ:0.0,  color:'rgba(140,231,255,{a})' },
-    { rMult:1.45, speed:0.016, tiltX:1.05, tiltZ:0.3,  color:'rgba(105,156,255,{a})' },
-    { rMult:1.58, speed:0.028, tiltX:-0.6, tiltZ:-0.8, color:'rgba(6,182,212,{a})' },
-  ];
-  // Live orbital particle state
-  const orbParticles = []; // { x, y, vx, vy, angle, ringIdx, particleIdx, trailX[], trailY[], baseAlpha }
-  let orbAngles = [0, Math.PI*2/3, Math.PI*4/3]; // current lead angle per ring
-  // Atom-ring orbital state: multiple rings of orbiting particles (kept for draw compat)
-  const atomRings = [];
+  // ── ORBITAL ANIMATIONS REMOVED ──
 
   class Particle {
     constructor(born) { this.reset(); this.alpha=born?0:1; this.fadeDelay=born?Math.random()*80:0; }
@@ -1985,7 +1970,7 @@
       const dx=mouse.x-this.x,dy=mouse.y-this.y,dist=Math.sqrt(dx*dx+dy*dy);
       if(dist<120&&dist>0){const f=((120-dist)/120)*0.55;this.vx-=(dx/dist)*f;this.vy-=(dy/dist)*f;}
       const spd=Math.sqrt(this.vx*this.vx+this.vy*this.vy);
-      const maxSpd = (gw && gw.isRepeller) ? 6.5 : 2.8;
+      const maxSpd = 2.8;
       if(spd>maxSpd){this.vx=(this.vx/spd)*maxSpd;this.vy=(this.vy/spd)*maxSpd;}
       if(spd>0.45){this.vx*=0.975;this.vy*=0.975;}
       if(gw){
@@ -1996,7 +1981,7 @@
             this.x = gw.x;
             this.y = gw.y;
             const angle = Math.random() * Math.PI * 2;
-            const speed = 2 + Math.random() * 4.5;
+            const speed = Math.random() * 0.3;
             this.vx = Math.cos(angle) * speed;
             this.vy = Math.sin(angle) * speed;
           } else {
@@ -2016,59 +2001,6 @@
       this.opacity=0.3+0.5*Math.abs(Math.sin(t*0.01+this.phase));
     }
 
-    /* ── SPHERE: exact reference shatter (perfeect_sphere_animation_studio) ── */
-    updateSphere(idx, cx, cy, radius, rotY, rotX, t) {
-      const mdx = mouse.x - cx, mdy = mouse.y - cy;
-      const mdist = Math.sqrt(mdx*mdx + mdy*mdy);
-      const shatterZone = radius * 2.5;
-
-      if (mdist < shatterZone && mdist > 0) {
-        if (!this.isShattered) {
-          this.isShattered = true;
-          // Burst outward from current position — exactly as reference
-          const dirX = this.x - cx, dirY = this.y - cy;
-          const len = Math.sqrt(dirX*dirX + dirY*dirY) || 1;
-          this.vx = (dirX/len) * (2 + Math.random()*4);
-          this.vy = (dirY/len) * (2 + Math.random()*4);
-        }
-        // While inside zone: behave exactly like drift (mouse repel, edge wrap, etc.)
-        this.updateDrift(t);
-        return;
-      }
-
-      // Outside shatter zone: clear flag, compute target, pull back
-      this.isShattered = false;
-      const { phi, theta } = sphereAngles[idx];
-      const rotTheta = theta + rotY;
-      const sinPhi=Math.sin(phi), cosPhi=Math.cos(phi);
-      let rx = sinPhi*Math.cos(rotTheta);
-      let ry = cosPhi;
-      let rz = sinPhi*Math.sin(rotTheta);
-      const cosX=Math.cos(rotX), sinX=Math.sin(rotX);
-      const ry2 = ry*cosX - rz*sinX;
-      const rz2 = ry*sinX + rz*cosX;
-
-      const persp = 1 + rz2*0.3;
-      const tx = cx + rx*radius*persp;
-      const ty = cy + ry2*radius*persp;
-      this._z = rz2;
-      this._persp = persp;
-
-      const ddx = tx - this.x, ddy = ty - this.y;
-      const dd = Math.sqrt(ddx*ddx+ddy*ddy);
-      if(dd > 0.5){
-        const pull = Math.min(dd*0.09, 3.5);
-        this.vx += (ddx/dd)*pull;
-        this.vy += (ddy/dd)*pull;
-      }
-
-      this.vx*=0.82; this.vy*=0.82;
-      this.x+=this.vx; this.y+=this.vy;
-
-      const depth=(rz2+1)/2;
-      this.opacity = 0.2 + depth*0.75;
-    }
-
     drawDrift(t) {
       if(this.fadeDelay>0)return;
       const dx=mouse.x-this.x,dy=mouse.y-this.y,dist=Math.sqrt(dx*dx+dy*dy);
@@ -2077,240 +2009,10 @@
       ctx.translate(this.x,this.y);ctx.rotate(this.drawAngle);
       ctx.fillStyle=color;ctx.fillRect(-1,-2.5,2,5);ctx.restore();
     }
-
-    drawSphere(t) {
-      // Reference implementation: shattered particles draw as normal drift particles
-      if(!this.isShattered && (this._z||0) < -0.1) return;
-      const scale = this.isShattered ? 1 : (this._persp||1);
-      const w=2*scale, h=5*scale;
-      const dx=mouse.x-this.x,dy=mouse.y-this.y,dist=Math.sqrt(dx*dx+dy*dy);
-
-      let color;
-      if(dist<140) {
-        color = rainbowColor(dist,140,t+this.phase*30);
-      } else if (!this.isShattered) {
-        const d01=((this._z||0)+1)/2;
-        color=`rgb(${Math.floor(6+d01*53)},${Math.floor(100+d01*82)},${Math.floor(180+d01*75)})`;
-      } else {
-        color = this.baseColor;
-      }
-
-      ctx.save();
-      ctx.globalAlpha=this.opacity*(this.alpha||1);
-      ctx.translate(this.x,this.y);
-      ctx.rotate(this.drawAngle + (!this.isShattered ? t*0.002 : 0));
-      ctx.fillStyle=color;
-      ctx.fillRect(-w/2,-h/2,w,h);
-      ctx.restore();
-    }
   }
 
   const particles=[];
   for(let i=0;i<COUNT;i++) particles.push(new Particle(true));
-
-  /* ── ORBITAL PARTICLES — init when sphere forms ── */
-  function initOrbParticles(cx, cy, baseR) {
-    orbParticles.length = 0;
-    orbAngles[0] = 0; orbAngles[1] = Math.PI*2/3; orbAngles[2] = Math.PI*4/3;
-    for(let ri=0; ri<N_ORB_RINGS; ri++){
-      const def = orbRingDefs[ri];
-      const r = baseR * def.rMult;
-      for(let pi=0; pi<N_ORB_PER_RING; pi++){
-        const frac = pi / N_ORB_PER_RING;
-        const angle = frac * Math.PI * 2;
-        orbParticles.push({
-          ringIdx: ri,
-          particleIdx: pi,
-          angle,
-          x: cx + Math.cos(angle)*r,
-          y: cy + Math.sin(angle)*r*0.38,
-          vx: 0, vy: 0,
-          trailX: [], trailY: [],
-          baseColor: def.color,
-          radius: r,
-          tiltX: def.tiltX,
-          tiltZ: def.tiltZ,
-        });
-      }
-    }
-  }
-
-  /* ── ORBITAL PARTICLE POSITION: project the elliptical orbit with tilt ── */
-  function orbPos(cx, cy, r, angle, tiltX, tiltZ, t) {
-    const ex = Math.cos(angle)*r;
-    const ey = Math.sin(angle)*r*0.38;
-    const cosZ=Math.cos(tiltZ+t*0.0015), sinZ=Math.sin(tiltZ+t*0.0015);
-    const cosX=Math.cos(tiltX), sinX=Math.sin(tiltX);
-    const ex2 = ex*cosZ - ey*sinZ;
-    const ey2 = ex*sinZ*cosX + ey*cosX;
-    const ez  = ex*sinZ*sinX - ey*sinX;
-    return { sx: cx+ex2, sy: cy+ey2, depth: (ez/r+1)/2 };
-  }
-
-  /* ── UPDATE + DRAW ORBITAL PARTICLES on ovCanvas ── */
-  function updateDrawOrbParticles(prog, t) {
-    if(orbParticles.length === 0) return;
-    const TRAIL = 8;
-    const speedMult = 1 + prog * 1.5;
-
-    for(let ri=0; ri<N_ORB_RINGS; ri++) {
-      orbAngles[ri] += orbRingDefs[ri].speed * speedMult;
-    }
-
-    for(const op of orbParticles){
-      const def = orbRingDefs[op.ringIdx];
-      const angle = op.angle + orbAngles[op.ringIdx];
-      const pos = orbPos(sphereCX, sphereCY, op.radius, angle, op.tiltX, op.tiltZ, t);
-
-      if(pos.depth < 0.08) continue;
-
-      // Progress fade: particles appear sequentially
-      const ringFrac = op.particleIdx / N_ORB_PER_RING;
-      const visibleFrac = Math.min(prog, 1);
-      let baseAlpha = pos.depth * Math.min(1, Math.max(0, visibleFrac - ringFrac*0.4)) * 0.9;
-      if(baseAlpha < 0.03) continue;
-
-      // Mouse proximity — rainbow + repel same as drift particles
-      const dmx = mouse.x - pos.sx, dmy = mouse.y - pos.sy;
-      const dm = Math.sqrt(dmx*dmx+dmy*dmy);
-      let color;
-      if(dm < 140) {
-        // rainbow
-        const ratio = 1 - Math.min(dm/140, 1);
-        const hue = (t*0.03 + (1-ratio)*280) % 360;
-        color = `hsla(${hue},${80+ratio*20}%,${50+ratio*20}%,${baseAlpha})`;
-      } else {
-        color = def.color.replace('{a}', baseAlpha.toFixed(2));
-      }
-
-      // Trail: store positions
-      op.trailX.unshift(pos.sx); op.trailY.unshift(pos.sy);
-      if(op.trailX.length > TRAIL){ op.trailX.pop(); op.trailY.pop(); }
-
-      // Draw trail (fading dashes back along orbit)
-      for(let ti=op.trailX.length-1; ti>=0; ti--){
-        const tf = 1 - ti/TRAIL;
-        const sz = (1.2 + pos.depth*1.2 + prog*0.8) * tf;
-        const ta = baseAlpha * tf * 0.7;
-        const tangentAngle = angle + Math.PI/2;
-        ovCtx.save();
-        ovCtx.globalAlpha = ta;
-        ovCtx.translate(op.trailX[ti], op.trailY[ti]);
-        ovCtx.rotate(tangentAngle);
-        ovCtx.fillStyle = color;
-        ovCtx.fillRect(-sz/2, -sz*2.2, sz, sz*4.5);
-        ovCtx.restore();
-      }
-
-      // Draw the lead "electron" head — bright dot with glow
-      if(op.particleIdx === 0) {
-        // Repel from mouse
-        if(dm < 100 && dm > 0) {
-          op.vx -= (dmx/dm) * ((100-dm)/100) * 0.6;
-          op.vy -= (dmy/dm) * ((100-dm)/100) * 0.6;
-        }
-        ovCtx.save();
-        ovCtx.shadowColor = '#8ce7ff';
-        ovCtx.shadowBlur = 14*prog;
-        ovCtx.beginPath();
-        ovCtx.arc(pos.sx, pos.sy, 3+prog*2, 0, Math.PI*2);
-        ovCtx.fillStyle = `rgba(220,248,255,${baseAlpha})`;
-        ovCtx.fill();
-        ovCtx.restore();
-
-        // sparkle cross on lead particle
-        if(prog > 0.3) {
-          ovCtx.save();
-          ovCtx.strokeStyle = `rgba(255,255,255,${baseAlpha*0.7})`;
-          ovCtx.lineWidth = 0.8;
-          ovCtx.shadowColor = '#8ce7ff'; ovCtx.shadowBlur = 6;
-          const sc = 4 + prog*3;
-          ovCtx.beginPath(); ovCtx.moveTo(pos.sx-sc, pos.sy); ovCtx.lineTo(pos.sx+sc, pos.sy); ovCtx.stroke();
-          ovCtx.beginPath(); ovCtx.moveTo(pos.sx, pos.sy-sc); ovCtx.lineTo(pos.sx, pos.sy+sc); ovCtx.stroke();
-          ovCtx.restore();
-        }
-      }
-    }
-  }
-
-  /* ── ATOM RINGS — kept as no-op placeholder to avoid reference errors ── */
-  function initAtomRings(cx, cy, baseR){ atomRings.length=0; }
-
-  /* ── PROGRESS OVERLAY drawn entirely on ovCanvas ── */
-  function drawProgressOverlay(t){
-    ovCtx.clearRect(0,0,ovCanvas.width,ovCanvas.height);
-    if(!PS_transferActive) return;
-
-    const cx=sphereCX, cy=sphereCY;
-    const prog=PS_progress;
-    const speed = window._PS_getSpeed ? window._PS_getSpeed() : 0;
-    const pct = Math.floor(prog*100);
-
-    // Draw orbital particle rings (interactive, mouse-reactive, trailing)
-    updateDrawOrbParticles(prog, t);
-
-    // Soft core bloom inside sphere
-    const bloomR = SPHERE_R * 0.6 * (0.7 + prog*0.3);
-    const bloom = ovCtx.createRadialGradient(cx,cy,0,cx,cy,bloomR);
-    bloom.addColorStop(0, `rgba(140,231,255,${0.08+prog*0.10})`);
-    bloom.addColorStop(0.5, `rgba(6,182,212,${0.04+prog*0.06})`);
-    bloom.addColorStop(1, 'rgba(6,182,212,0)');
-    ovCtx.beginPath(); ovCtx.arc(cx,cy,bloomR,0,Math.PI*2);
-    ovCtx.fillStyle=bloom; ovCtx.fill();
-
-    // ── PROGRESS ARC RING — centered on the sphere ──
-    const ringR = SPHERE_R + (isMobile ? 12 : 18);
-    const ringCX = cx;
-    const ringCY = cy;
-
-    // Background track
-    ovCtx.save();
-    ovCtx.beginPath();
-    ovCtx.arc(ringCX, ringCY, ringR, 0, Math.PI*2);
-    ovCtx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ovCtx.lineWidth = 4;
-    ovCtx.stroke();
-    ovCtx.restore();
-
-    // Filled progress arc (cyan→blue gradient)
-    if(prog > 0.001) {
-      ovCtx.save();
-      const grad = ovCtx.createLinearGradient(ringCX - ringR, ringCY, ringCX + ringR, ringCY);
-      grad.addColorStop(0, '#06b6d4');
-      grad.addColorStop(1, '#3b82f6');
-      ovCtx.beginPath();
-      ovCtx.arc(ringCX, ringCY, ringR, -Math.PI/2, -Math.PI/2 + Math.PI*2*prog);
-      ovCtx.strokeStyle = grad;
-      ovCtx.lineWidth = 4;
-      ovCtx.lineCap = 'round';
-      ovCtx.shadowColor = '#06b6d4';
-      ovCtx.shadowBlur = 10;
-      ovCtx.stroke();
-      ovCtx.restore();
-    }
-
-    // Pct inside ring
-    ovCtx.save();
-    ovCtx.textAlign='center'; ovCtx.textBaseline='middle';
-    ovCtx.font=`700 ${isMobile?26:36}px "JetBrains Mono", monospace`;
-    ovCtx.fillStyle='rgba(220,248,255,0.95)';
-    ovCtx.shadowColor='#06b6d4'; ovCtx.shadowBlur=14;
-    ovCtx.fillText(pct+'%', ringCX, ringCY - 8);
-    ovCtx.restore();
-
-    // Speed + ETA below pct, inside ring
-    const etaText = window._PS_getETA ? window._PS_getETA() : '';
-    if(speed > 0 || etaText) {
-      ovCtx.save();
-      ovCtx.textAlign='center'; ovCtx.textBaseline='middle';
-      ovCtx.font=`500 ${isMobile?11:13}px "JetBrains Mono", monospace`;
-      ovCtx.fillStyle='rgba(6,182,212,0.9)';
-      ovCtx.shadowColor='#06b6d4'; ovCtx.shadowBlur=8;
-      if(speed > 0) ovCtx.fillText(speed.toFixed(1)+' MB/s', ringCX, ringCY + 10);
-      if(etaText)   ovCtx.fillText(etaText, ringCX, ringCY + 26);
-      ovCtx.restore();
-    }
-  }
 
   window.ParticleSystem={
     convergeToPoint(x,y,r,ms){ /* kept for API compat, not used for sphere */ },
@@ -2329,23 +2031,16 @@
       }
     },
     /* Form sphere: particles get pulled to shell, rotate continuously */
+    /* Form sphere: compatibility no-op */
     formSphere(cx, cy, radius){
       sphereCX=cx; sphereCY=cy; SPHERE_R=radius;
-      sphereRotY=0; sphereRotX=0.25;
-      sphereActive=true;
-      PS_state='sphere';
-      ovCanvas.classList.add('active');
-      // Reset isShattered flag on all particles
-      for(const p of particles) p.isShattered = false;
     },
-    /* Begin transfer: show orbital particles + HUD */
+    /* Begin transfer: compatibility start */
     startTransfer(progress_getter, speed_getter){
       PS_transferActive=true;
       PS_progress=0;
       window._PS_getProgress=progress_getter;
       window._PS_getSpeed=speed_getter;
-      initAtomRings(sphereCX, sphereCY, SPHERE_R); // no-op, kept for compat
-      initOrbParticles(sphereCX, sphereCY, SPHERE_R);
     },
     /* Explode sphere back to drift */
     explodeSphere(onDone){
@@ -2354,8 +2049,10 @@
       ovCanvas.classList.remove('active');
       ovCtx.clearRect(0,0,ovCanvas.width,ovCanvas.height);
       // Burst outward from center
+      const cx = sphereCX || CX();
+      const cy = sphereCY || CY();
       for(const p of particles){
-        const dx=p.x-sphereCX, dy=p.y-sphereCY;
+        const dx=p.x-cx, dy=p.y-cy;
         const dist=Math.sqrt(dx*dx+dy*dy)||1;
         const spd=8+Math.random()*14;
         p.vx=(dx/dist)*spd; p.vy=(dy/dist)*spd;
@@ -2368,28 +2065,6 @@
   function loop(){
     requestAnimationFrame(loop); t++;
     ctx.fillStyle='rgba(5,5,5,0.22)'; ctx.fillRect(0,0,canvas.width,canvas.height);
-
-    if(PS_state==='sphere'){
-      // Continuous slow Y rotation — like a gravity well pivot
-      const speedBoost = PS_transferActive && window._PS_getSpeed ? window._PS_getSpeed()/10 : 0;
-      sphereRotY += 0.006 + speedBoost*0.004;
-
-      // Update progress
-      if(PS_transferActive && window._PS_getProgress) PS_progress=window._PS_getProgress();
-
-      // Depth-sort and draw particles on sphere shell
-      const order=[];
-      for(let i=0;i<COUNT;i++){
-        particles[i].updateSphere(i, sphereCX, sphereCY, SPHERE_R, sphereRotY, sphereRotX, t);
-        order.push(i);
-      }
-      order.sort((a,b)=>(particles[a]._z||0)-(particles[b]._z||0));
-      for(const i of order) particles[i].drawSphere(t);
-
-      drawProgressOverlay(t);
-      ctx.globalAlpha=1;
-      return;
-    }
 
     // Normal drift
     for(const p of particles){
@@ -2956,6 +2631,10 @@
 
   window.onTransferCancelled = function() {
     console.log("UI: onTransferCancelled called");
+    const wasReceiver = document.getElementById('receiver-screen').classList.contains('visible') ||
+                        document.getElementById('receive-progress').classList.contains('visible') ||
+                        document.getElementById('receive-success').classList.contains('visible');
+
     if (transferRafId) { cancelAnimationFrame(transferRafId); transferRafId = null; }
     if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
 
@@ -2978,18 +2657,26 @@
 
     if (window.ParticleSystem) {
       ParticleSystem.releaseAll();
-      const isReceiverVisible = document.getElementById('receiver-screen').classList.contains('visible');
-      if (isReceiverVisible && typeof window.startGravityWellIdle === 'function') {
-        window.startGravityWellIdle();
-      }
     }
 
     if (typeof resetSenderUI === 'function') resetSenderUI();
 
     const badge = document.getElementById('room-code-display');
     const roomCodeText = badge ? badge.textContent.replace('Room ', '').trim() : '';
-    if (roomCodeText && typeof window.transitionToSender === 'function') {
-      window.transitionToSender(roomCodeText);
+
+    if (wasReceiver) {
+      document.getElementById('gravity-well-ui').classList.remove('hidden');
+      gwLoopActive = false;
+      if (typeof window.startGravityWellIdle === 'function') {
+        window.startGravityWellIdle();
+      }
+      if (roomCodeText && typeof window.transitionToReceiver === 'function') {
+        window.transitionToReceiver(roomCodeText);
+      }
+    } else {
+      if (roomCodeText && typeof window.transitionToSender === 'function') {
+        window.transitionToSender(roomCodeText);
+      }
     }
   };
 
