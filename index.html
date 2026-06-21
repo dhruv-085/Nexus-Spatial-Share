@@ -2024,6 +2024,7 @@
     },
     setGravityWell(x,y,s,isRepeller=false){gravWell={x,y,strength:s,isRepeller};},
     clearGravityWell(){gravWell=null;},
+    isRepeller(){ return (gravWell && gravWell.isRepeller) || false; },
     shatterEffect(x,y,color){
       for(let i=0;i<70;i++){
         const a=Math.random()*Math.PI*2,s=Math.random()*9+2;
@@ -2537,7 +2538,13 @@
     document.getElementById('control-panel').classList.remove('visible');
 
     // Start outward repeller well
-    ParticleSystem.setGravityWell(CX(), CY(), 0.5, true);
+    ParticleSystem.setGravityWell(CX(), CY(), 0.35, true);
+    if (typeof window.stopGravityWellIdle === 'function') {
+      window.stopGravityWellIdle();
+    }
+    if (typeof window.startGravityWellIdle === 'function') {
+      window.startGravityWellIdle();
+    }
 
     // Brief shockwave on grab then start transfer
     startShockwave(CX(), CY());
@@ -2603,6 +2610,9 @@
   function completeTransfer() {
     if(transferRafId) cancelAnimationFrame(transferRafId);
     isTransferring = false; sphereFormed = false;
+    if (typeof window.stopGravityWellIdle === 'function') {
+      window.stopGravityWellIdle();
+    }
     // Hide progress screen first
     document.getElementById('progress-screen').classList.remove('visible');
     // Explode particles → they drift back naturally → show success
@@ -2655,6 +2665,10 @@
     hideCancelConfirm();
     if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
 
+    if (typeof window.stopGravityWellIdle === 'function') {
+      window.stopGravityWellIdle();
+    }
+
     if (window.ParticleSystem) {
       ParticleSystem.releaseAll();
     }
@@ -2666,7 +2680,6 @@
 
     if (wasReceiver) {
       document.getElementById('gravity-well-ui').classList.remove('hidden');
-      gwLoopActive = false;
       if (typeof window.startGravityWellIdle === 'function') {
         window.startGravityWellIdle();
       }
@@ -2704,6 +2717,9 @@
     document.getElementById('control-panel').classList.remove('visible');
     document.getElementById('home-screen').classList.remove('hidden');
     document.getElementById('join-error').textContent='';
+    if (typeof window.stopGravityWellIdle === 'function') {
+      window.stopGravityWellIdle();
+    }
     ParticleSystem.releaseAll();
   };
   document.getElementById('btn-leave').addEventListener('click', leaveRoom);
@@ -2833,11 +2849,16 @@
     function oscillate() {
       if (!gwLoopActive) return; // stop when externally killed
       const str = 0.35 + Math.sin(t * 0.018) * 0.06;
-      ParticleSystem.setGravityWell(CX(), CY(), str);
+      const isRep = (window.ParticleSystem && window.ParticleSystem.isRepeller()) ? true : false;
+      ParticleSystem.setGravityWell(CX(), CY(), str, isRep);
       t++;
       requestAnimationFrame(oscillate);
     }
     oscillate();
+  }
+  window.stopGravityWellIdle = function stopGravityWellIdle() {
+    gwLoopActive = false;
+    ParticleSystem.clearGravityWell();
   }
 
   /* ── INCOMING SPHERE ANIMATION ── */
@@ -3033,9 +3054,9 @@
     });
 
     rxTransferActive = false;
-    // Kill the gravity well loop — particles drift freely after receive
-    gwLoopActive = false;
-    ParticleSystem.clearGravityWell();
+    if (typeof window.stopGravityWellIdle === 'function') {
+      window.stopGravityWellIdle();
+    }
   }
 
   function dismissSuccess() {
@@ -3119,7 +3140,10 @@
   /* ── LEAVE RECEIVER ── */
   window.leaveReceiver = function leaveReceiver() {
     if (rxRafId) cancelAnimationFrame(rxRafId);
-    rxTransferActive = false; rxProgress = 0; rxSpeed = 0; gwLoopActive = false;
+    rxTransferActive = false; rxProgress = 0; rxSpeed = 0;
+    if (typeof window.stopGravityWellIdle === 'function') {
+      window.stopGravityWellIdle();
+    }
 
     // Clear all receiver UI
     document.getElementById('receive-progress').classList.remove('visible');
