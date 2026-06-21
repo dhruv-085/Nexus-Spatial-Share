@@ -1,7 +1,7 @@
 ---
 title: Nexus UI Integration Architecture and Decisions
 date: 2026-06-17
-last_updated: 2026-06-18
+last_updated: 2026-06-21
 category: architecture-patterns
 module: "Nexus Spatial Share UI"
 problem_type: architecture_pattern
@@ -57,6 +57,14 @@ The challenge was to migrate the static Chapter 8 premium visual shell into the 
 *   **OPFS Files Drawer Integration**: Symmetrical drop actions stream binary chunks straight to the Origin Private File System (OPFS) fallback. The files drawer `#files-panel` populates directly from the OPFS storage list. Dynamic blob URL triggers are wired for download operations, and `#btn-clear-files` triggers a complete directory purge.
 *   **OTP Paste & Focus Navigation**: Room pairing code input fields (`#otp-0` to `#otp-3`) are augmented with automatic focus-forward and backspace-retro navigation. Registering a clipboard paste handler on `#otp-0` auto-populates the 4 digits and triggers the join sequence.
 
+### 6. Animation Loop Synchronization and Repelling Particle Dynamics
+*   **IIFE Isolation Scope Control**: The particle system and workspace animations run in local variables within isolated IIFE modules inside `index.html`. To prevent state drift (e.g., animation loops continuing to spin after cancellations or room exits), state reset hooks (such as `window.stopGravityWellIdle()`) are exposed globally to act as bridges to local state variables (`gwLoopActive`).
+*   **Outward-Shooting Symmetrical Repeller**: The sender animation utilizes a repelling gravity well dynamics setup to mirror the receiver's incoming particle draw. To keep the screen from cluttering or lagging:
+    -   Particles accelerate outward based on repelling forces from the well.
+    -   When a particle's radial distance exceeds 50% of the canvas diagonal size or touches screen boundaries, it gets recycled back to the center well with a randomized low initial drift velocity.
+    -   The strength of the repeller modulates dynamically in synchronization with the oscillation frequency (`0.35 + Math.sin(t * 0.018) * 0.06`), generating smooth outward wave patterns rather than chaotic bursts.
+*   **Aesthetic Progress Ring Synchronization**: The sender progress ring uses identical fill colors, gradients, and font offsets as the receiver's progress ring (`receive-ring-fill` and `receiveRingGrad`), guaranteeing visual alignment across both roles.
+
 ---
 
 ## Why This Matters
@@ -88,6 +96,12 @@ Integrating premium UI assets without disturbing the core transfer logic keeps U
 4.  **Early Closure Wrappers for Undeclared Variables**:
     -   *Lesson*: Calling window functions that are defined later in execution can crash HTML parsing. 
     -   *Practice*: Wrapping these bindings in closures (e.g., `() => { if (typeof window.leaveReceiver === 'function') window.leaveReceiver(); }`) resolves parse-time crash conditions.
+5.  **Cross-Scope Canvas Control and IIFE Variables**:
+    -   *Lesson*: Setting global properties directly is not enough if local frame-loops inside an IIFE closure check local state guards (e.g., `gwLoopActive`). Writing to a global name inside another closure creates a silent undeclared global variable instead of writing to the IIFE-scoped variable.
+    -   *Practice*: Always expose dedicated setter/teardown functions (like `window.stopGravityWellIdle`) on the global object from inside the IIFE scope to control and mutate IIFE-internal state safely.
+6.  **Symmetrical Particle Wave Modulation**:
+    -   *Lesson*: Static outward repulsion forces create visual chaos as particles fly off-screen immediately, leaving the center empty.
+    -   *Practice*: Oscillate the repelling gravity well strength dynamically (e.g., using a sinusoidal wave offset) and reset particles back to the well center once they hit screen boundaries. This maintains a balanced, organic density of particles.
 
 ---
 
@@ -183,6 +197,38 @@ if (process.env.NODE_ENV !== "production") {
 
   app.use(vite.middlewares);
 }
+```
+
+### Symmetrical Gravity Well Oscillation and Dynamic Repeller Loop (`index.html`)
+This implementation shows the oscillation animation loop that bridges local state variables to global methods and dynamically modulates well strength for both attractors and repellers:
+
+```javascript
+// index.html - Inside the canvas/particle animation IIFE
+let gwLoopActive = false; // IIFE-scoped guard
+
+window.startGravityWellIdle = function startGravityWellIdle() {
+  if (gwLoopActive) return; // prevent duplicate loops
+  gwLoopActive = true;
+  let t = 0;
+  function oscillate() {
+    if (!gwLoopActive) return; // stop when loop is deactivated
+    
+    // Smooth sinusoidal strength modulation
+    const str = 0.35 + Math.sin(t * 0.018) * 0.06;
+    const isRep = (window.ParticleSystem && window.ParticleSystem.isRepeller()) ? true : false;
+    
+    // Propagate strength and state to the particle system
+    ParticleSystem.setGravityWell(CX(), CY(), str, isRep);
+    t++;
+    requestAnimationFrame(oscillate);
+  }
+  oscillate();
+};
+
+window.stopGravityWellIdle = function stopGravityWellIdle() {
+  gwLoopActive = false; // cleanly terminates oscillate frame loop
+  ParticleSystem.clearGravityWell();
+};
 ```
 
 ---
