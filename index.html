@@ -659,11 +659,11 @@
     .btn-cancel:hover { color: var(--danger); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.4); background: rgba(239,68,68,0.06); }
 
     /* cancel confirm */
-    #cancel-confirm {
+    #cancel-confirm, #rx-cancel-confirm {
       display: none; text-align: center; gap: 12px;
       flex-direction: column; align-items: center;
     }
-    #cancel-confirm.visible { display: flex; }
+    #cancel-confirm.visible, #rx-cancel-confirm.visible { display: flex; }
     .cancel-confirm-text {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
       color: rgba(248,113,113,0.8); letter-spacing: 0.3px; max-width: 260px; line-height: 1.6;
@@ -1843,6 +1843,16 @@
     <div class="progress-filename" id="receive-filename"></div>
     <div class="progress-stats" id="receive-stats"></div>
   </div>
+  <div id="rx-cancel-area" style="margin-top: 24px;">
+    <button class="btn-cancel" id="btn-rx-cancel" onclick="showRxCancelConfirm()">Cancel Transfer</button>
+    <div id="rx-cancel-confirm">
+      <div class="cancel-confirm-text">Cancel transfer? The file will be incomplete.</div>
+      <div class="cancel-confirm-btns">
+        <button class="btn-confirm-yes" onclick="cancelTransfer()">Yes, Cancel</button>
+        <button class="btn-confirm-no" onclick="hideRxCancelConfirm()">No, Continue</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- RECEIVE SUCCESS -->
@@ -1987,12 +1997,30 @@
       const dx=mouse.x-this.x,dy=mouse.y-this.y,dist=Math.sqrt(dx*dx+dy*dy);
       if(dist<120&&dist>0){const f=((120-dist)/120)*0.55;this.vx-=(dx/dist)*f;this.vy-=(dy/dist)*f;}
       const spd=Math.sqrt(this.vx*this.vx+this.vy*this.vy);
-      if(spd>2.8){this.vx=(this.vx/spd)*2.8;this.vy=(this.vy/spd)*2.8;}
+      const maxSpd = (gw && gw.isRepeller) ? 6.5 : 2.8;
+      if(spd>maxSpd){this.vx=(this.vx/spd)*maxSpd;this.vy=(this.vy/spd)*maxSpd;}
       if(spd>0.45){this.vx*=0.975;this.vy*=0.975;}
       if(gw){
-        const gx=gw.x-this.x,gy=gw.y-this.y,gd=Math.sqrt(gx*gx+gy*gy);
-        if(gd<6){this.x=Math.random()*canvas.width;this.y=Math.random()*canvas.height;this.vx=(Math.random()-.5)*.4;this.vy=(Math.random()-.5)*.4;}
-        else{const s=gw.strength*60;this.vx+=(gx/gd)*s*.012;this.vy+=(gy/gd)*s*.012;}
+        if (gw.isRepeller) {
+          const gx=this.x-gw.x,gy=this.y-gw.y,gd=Math.sqrt(gx*gx+gy*gy)||1;
+          // If too far or hit border, reset to center
+          if (gd > Math.max(canvas.width, canvas.height) * 0.5 || this.x < 2 || this.x > canvas.width - 2 || this.y < 2 || this.y > canvas.height - 2) {
+            this.x = gw.x;
+            this.y = gw.y;
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 2 + Math.random() * 4.5;
+            this.vx = Math.cos(angle) * speed;
+            this.vy = Math.sin(angle) * speed;
+          } else {
+            const s = gw.strength*60;
+            this.vx += (gx/gd)*s*.012;
+            this.vy += (gy/gd)*s*.012;
+          }
+        } else {
+          const gx=gw.x-this.x,gy=gw.y-this.y,gd=Math.sqrt(gx*gx+gy*gy);
+          if(gd<6){this.x=Math.random()*canvas.width;this.y=Math.random()*canvas.height;this.vx=(Math.random()-.5)*.4;this.vy=(Math.random()-.5)*.4;}
+          else{const s=gw.strength*60;this.vx+=(gx/gd)*s*.012;this.vy+=(gy/gd)*s*.012;}
+        }
       }
       this.x+=this.vx; this.y+=this.vy;
       if(this.x<0)this.x=canvas.width; if(this.x>canvas.width)this.x=0;
@@ -2304,7 +2332,7 @@
       ovCanvas.classList.remove('active');
       ovCtx.clearRect(0,0,ovCanvas.width,ovCanvas.height);
     },
-    setGravityWell(x,y,s){gravWell={x,y,strength:s};},
+    setGravityWell(x,y,s,isRepeller=false){gravWell={x,y,strength:s,isRepeller};},
     clearGravityWell(){gravWell=null;},
     shatterEffect(x,y,color){
       for(let i=0;i<70;i++){
@@ -2841,8 +2869,8 @@
     const qw=document.getElementById('queue-wrap'); qw.style.opacity='0'; qw.style.transition='opacity 0.3s';
     document.getElementById('control-panel').classList.remove('visible');
 
-    // Form sphere from bg particles (gravity-well pull to shell)
-    ParticleSystem.formSphere(CX(), CY(), SR);
+    // Start outward repeller well
+    ParticleSystem.setGravityWell(CX(), CY(), 0.5, true);
 
     // Brief shockwave on grab then start transfer
     startShockwave(CX(), CY());
@@ -2852,13 +2880,25 @@
       const isRealSocket = window._socketIsConnected && window._socketIsConnected();
       if (isRealSocket) {
         // Real WebRTC backend is handling this in App.tsx
-        console.log("[index.html] Real backend active, showing progress screen cancel area.");
+        console.log("[index.html] Real backend active, showing progress screen.");
         const ps = document.getElementById('progress-screen');
         if (ps) {
-          ps.querySelector('.progress-ring-wrap').style.display = 'none';
-          ps.querySelector('.progress-meta').style.display = 'none';
-          const fileLabel = ps.querySelector('.progress-file-label');
-          if (fileLabel) fileLabel.style.display = 'none';
+          // Initialize progress DOM visuals
+          const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
+          const fileLabel = fileQueue.length > 1 ? `File 1 of ${fileQueue.length}` : '';
+          const fileLabelEl = document.getElementById('progress-file-label');
+          if (fileLabelEl) fileLabelEl.textContent = fileLabel;
+          
+          const filenameEl = document.getElementById('progress-filename');
+          if (filenameEl) {
+            filenameEl.textContent = fileQueue.length > 1 ? `Sending ${fileQueue.length} files...` : firstName;
+          }
+          const statsEl = document.getElementById('progress-stats');
+          if (statsEl) statsEl.textContent = '— Sending…';
+          
+          if (typeof window.updateSenderProgress === 'function') {
+            window.updateSenderProgress(0, 0);
+          }
           ps.classList.add('visible');
         }
       } else {
@@ -2866,6 +2906,33 @@
       }
     }, 500);
   });
+
+  /* ── SENDER PROGRESS HOOK ── */
+  window.updateSenderProgress = function(progress, speedMbps) {
+    const circumference = 502;
+    const offset = circumference * (1 - progress);
+    const ringEl = document.getElementById('progress-ring');
+    if (ringEl) ringEl.style.strokeDashoffset = offset;
+    const pctEl = document.getElementById('progress-pct');
+    if (pctEl) pctEl.textContent = Math.floor(progress * 100);
+
+    const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
+    const filenameEl = document.getElementById('progress-filename');
+    if (filenameEl) {
+      filenameEl.textContent = fileQueue.length > 1 ? `Sending ${fileQueue.length} files...` : firstName;
+    }
+
+    if (speedMbps > 0) {
+      const totalBytes = fileQueue.reduce((s,f)=>s+f.size,0) || (80*1048576);
+      const remaining = totalBytes * (1 - progress);
+      const etaSec = remaining / (speedMbps * 1048576);
+      const etaStr = etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's';
+      const statsEl = document.getElementById('progress-stats');
+      if (statsEl) {
+        statsEl.textContent = speedMbps.toFixed(1) + ' MB/s · ' + etaStr + ' remaining';
+      }
+    }
+  };
 
   /* Expose completeTransfer so Ch7 DataChannel 'eof' can trigger it */
   window._completeTransferCh3 = function() { completeTransfer(); };
@@ -2885,13 +2952,12 @@
     const fileLabel = fileQueue.length > 1 ? `File 1 of ${fileQueue.length}` : '';
     document.getElementById('progress-file-label').textContent = fileLabel;
 
-    // Show progress-screen but HIDE the ring/pct/meta — sphere canvas owns those visuals.
-    // Only show the cancel button area (below the sphere).
+    // Show progress-screen
     const ps = document.getElementById('progress-screen');
-    ps.querySelector('.progress-ring-wrap').style.display = 'none';
-    ps.querySelector('.progress-meta').style.display = 'none';
-    ps.querySelector('.progress-file-label') && (ps.querySelector('.progress-file-label').style.display = 'none');
     ps.classList.add('visible');
+
+    // Start outward repeller well
+    ParticleSystem.setGravityWell(CX(), CY(), 0.5, true);
 
     // Wire getters so particle system reads live values each frame
     window._PS_getETA = () => currentETA;
@@ -2908,6 +2974,9 @@
       speedSamples.push(instant);
       if(speedSamples.length>5) speedSamples.shift();
       currentSpeed = speedSamples.reduce((a,b)=>a+b,0)/speedSamples.length;
+
+      // Update sender progress in DOM
+      window.updateSenderProgress(currentProgress, currentSpeed);
 
       // Compute ETA string
       if(currentSpeed > 0 && currentProgress < 1) {
@@ -2955,14 +3024,46 @@
     document.getElementById('cancel-confirm').classList.remove('visible');
   };
   window.cancelTransfer=function(){
-    if(transferRafId) cancelAnimationFrame(transferRafId);
-    isTransferring=false; sphereFormed=false; currentProgress=0; currentSpeed=0;
-    document.getElementById('progress-screen').classList.remove('visible');
-    hideCancelConfirm();
-    ParticleSystem.explodeSphere(()=>ParticleSystem.releaseAll());
-    resetSenderUI();
-    // Ch7: signal peer
     if (window._socketCancelTransfer) window._socketCancelTransfer();
+  };
+
+  window.onTransferCancelled = function() {
+    console.log("UI: onTransferCancelled called");
+    if (transferRafId) { cancelAnimationFrame(transferRafId); transferRafId = null; }
+    if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
+
+    isTransferring = false;
+    sphereFormed = false;
+    currentProgress = 0;
+    currentSpeed = 0;
+
+    rxTransferActive = false;
+    rxProgress = 0;
+    rxSpeed = 0;
+
+    document.getElementById('progress-screen').classList.remove('visible');
+    document.getElementById('receive-progress').classList.remove('visible');
+    document.getElementById('receive-success').classList.remove('visible');
+    document.getElementById('transfer-error-screen').classList.remove('visible');
+    
+    hideCancelConfirm();
+    if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
+
+    if (window.ParticleSystem) {
+      ParticleSystem.releaseAll();
+      const isReceiverVisible = document.getElementById('receiver-screen').classList.contains('visible');
+      if (isReceiverVisible && typeof window.startGravityWellIdle === 'function') {
+        window.startGravityWellIdle();
+      }
+    }
+
+    if (typeof resetSenderUI === 'function') resetSenderUI();
+
+    const badge = document.getElementById('room-code-display');
+    const roomCodeText = badge ? badge.textContent.replace('Room ', '').trim() : '';
+    if (roomCodeText && typeof window.transitionToSender === 'function') {
+      window.transitionToSender(roomCodeText);
+    }
   };
 
   /* ── SUCCESS ACTIONS ── */
@@ -3328,6 +3429,7 @@
   function completeReceive(filename, totalBytes, url) {
     if (rxRafId) cancelAnimationFrame(rxRafId);
     document.getElementById('receive-progress').classList.remove('visible');
+    if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
 
     // Play 3 ripple rings then show success
     playRipple(() => {
@@ -3429,6 +3531,16 @@
   startReceive = function(filename, totalBytes, isFake) {
     rxMeta = { name: filename, size: totalBytes };
     _origStartReceive(filename, totalBytes, isFake);
+  };
+
+  /* ── RECEIVER CANCEL CONFIRM ── */
+  window.showRxCancelConfirm = function() {
+    document.getElementById('btn-rx-cancel').style.display = 'none';
+    document.getElementById('rx-cancel-confirm').classList.add('visible');
+  };
+  window.hideRxCancelConfirm = function() {
+    document.getElementById('btn-rx-cancel').style.display = '';
+    document.getElementById('rx-cancel-confirm').classList.remove('visible');
   };
 
   /* ── LEAVE RECEIVER ── */
@@ -3702,11 +3814,6 @@
       );
     } else {
       Toast.show('Peer disconnected.', 'warning');
-      // Return home gracefully
-      setTimeout(() => {
-        if (typeof window.leaveRoom === 'function') window.leaveRoom();
-        else if (typeof window.leaveReceiver === 'function') window.leaveReceiver();
-      }, 800);
     }
   };
 
@@ -3976,7 +4083,10 @@
       updateStatusPill();
 
       const centerBar = document.getElementById('top-bar-center');
-      if (centerBar) centerBar.style.display = 'none';
+      if (centerBar) {
+        centerBar.style.display = 'flex';
+        centerBar.innerHTML = '<div class="connected-dot amber"></div><span>Waiting for Peer</span>';
+      }
 
       if (window.showPeerDisconnected) showPeerDisconnected(midTransfer);
     },

@@ -838,6 +838,7 @@ export default function App() {
     if (fileInputRef.current) { fileInputRef.current.value = ''; }
     setMessages((prev) => [...prev, `SYSTEM: Transfer cancelled.`]);
     if (socketRef.current) { socketRef.current.emit("dropped", roomCodeRef.current); }
+    (window as any).onTransferCancelled?.();
   };
 
   const handleEngineComplete = (blob: Blob | null) => {
@@ -1414,6 +1415,7 @@ export default function App() {
             setTelemetry(null);
             if (fileInputRef.current) fileInputRef.current.value = '';
             setMessages((prev) => [...prev, `SYSTEM: Peer cancelled the transfer.`]);
+            (window as any).onTransferCancelled?.();
 
 
           } else if (payload.type === "TRANSFER_COMPLETE") {
@@ -1732,12 +1734,13 @@ export default function App() {
   useEffect(() => {
     if (isTransferring && isSource) {
       (window as any).ParticleSystem?.startTransfer(
-        () => transferProgress,
+        () => transferProgress / 100,
         () => telemetry?.speedMBps ?? 0
       );
+      (window as any).updateSenderProgress?.(transferProgress / 100, telemetry?.speedMBps ?? 0);
     }
     if (isTransferring && !isSource) {
-        (window as any).updateReceiverProgress?.(transferProgress, telemetry?.speedMBps ?? 0);
+        (window as any).updateReceiverProgress?.(transferProgress / 100, telemetry?.speedMBps ?? 0);
     }
   }, [isTransferring, isSource, transferProgress, telemetry]);
 
