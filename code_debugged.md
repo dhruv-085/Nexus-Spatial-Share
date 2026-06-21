@@ -53,3 +53,26 @@ This file documents all bugs fixed in this project. **All future agent sessions 
 * **Symptom**: When the signaling server rejected a connection as full, the home screen UI didn't show the error visual or shake effect.
 * **Root Cause**: `showRoomError` in `index.html` was not exposed globally to the `window` object, so `App.tsx` couldn't call it.
 * **Fix**: Exposed `showRoomError` as `window.showRoomError = showRoomError` and updated `App.tsx` to call it when receiving `status === 'full'`.
+
+---
+
+## 8. Animation Stuck on Cancel (Cross-Scope IIFE Variable Bug)
+* **Symptom**: When a transfer is cancelled mid-flight, both sender and receiver particle animations stay stuck in a loop and the progress UI never resets.
+* **Root Cause**: `onTransferCancelled()` in Chapter 3's IIFE referenced `rxRafId`, `rxTransferActive`, `rxProgress`, `rxSpeed` directly, but these are declared in Chapter 4's IIFE. JS silently created implicit globals instead of modifying the real IIFE-scoped variables, so the real receiver animation frame was never cancelled.
+* **Fix**: Exposed `window.stopReceiverAnimation()` from Chapter 4's IIFE to properly cancel receiver animations. `onTransferCancelled()` now calls this instead of referencing cross-scope variables. Also hoisted `animRaf` to IIFE-scoped `incomingSphereRafId` for external cancellation.
+
+---
+
+## 9. Sender Repeller Particle Symmetry
+* **Symptom**: Sender's outward-shooting particles were too fast and too dense compared to the receiver's inward-converging particles, breaking visual symmetry.
+* **Root Cause**: Repeller reset speed was `1.5 + Math.random() * 1.0` (1.5–2.5 units/frame) — 5-9× faster than the attractor's reset speed of `(Math.random()-.5)*.4` (~0–0.28 units/frame). The attractor lets its force do the gradual acceleration; the repeller was launching at terminal velocity.
+* **Fix**: Changed repeller reset speed from polar angles to the exact Cartesian formula used by the attractor: `this.vx = (Math.random() - 0.5) * 0.4` and `this.vy = (Math.random() - 0.5) * 0.4`. Kept the spawn offset at `(Math.random() - 0.5) * 6` to match the attractor's center distance threshold. This makes the initial velocity and position distribution mathematically identical to the attractor's, allowing the opposite forces to accelerate them symmetrically.
+
+---
+
+## 10. Sender Particles Moving Inward (Gravity Well Operation Order Bug)
+* **Symptom**: Sender's repeller particles move inward (attractor behavior) instead of outward during send animation.
+* **Root Cause**: In the grab handler, `setGravityWell(isRepeller=true)` was called BEFORE `stopGravityWellIdle()`. Since `stopGravityWellIdle()` calls `clearGravityWell()` which sets `gravWell=null`, it immediately wiped the repeller state. When `startGravityWellIdle()` then ran its first `oscillate()` frame, `isRepeller()` read `null` → returned `false` → set attractor mode permanently.
+* **Fix**: Reordered to **stop → set → start**: stop the old loop (clears gravWell), then set the repeller well (gravWell.isRepeller=true), then start the new oscillation loop (reads the fresh repeller state).
+
+---

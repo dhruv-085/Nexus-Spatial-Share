@@ -1976,15 +1976,17 @@
       if(gw){
         if (gw.isRepeller) {
           const gx=this.x-gw.x,gy=this.y-gw.y,gd=Math.sqrt(gx*gx+gy*gy)||1;
-          // If too far or hit border, reset to center
+          // Symmetrical boundary: same 0.5 * diagonal threshold as attractor center-reset
           if (gd > Math.max(canvas.width, canvas.height) * 0.5 || this.x < 2 || this.x > canvas.width - 2 || this.y < 2 || this.y > canvas.height - 2) {
-            this.x = gw.x;
-            this.y = gw.y;
-            const angle = Math.random() * Math.PI * 2;
-            const speed = Math.random() * 0.3;
-            this.vx = Math.cos(angle) * speed;
-            this.vy = Math.sin(angle) * speed;
+            // Reset to center with low initial drift — let the repeller force
+            // gradually accelerate outward, mirroring attractor's gradual inward pull.
+            // Attractor resets at (Math.random()-.5)*.4 ≈ 0–0.28 magnitude.
+            this.x = gw.x + (Math.random() - 0.5) * 6;
+            this.y = gw.y + (Math.random() - 0.5) * 6;
+            this.vx = (Math.random() - 0.5) * 0.4;
+            this.vy = (Math.random() - 0.5) * 0.4;
           } else {
+            // Same force constant as attractor (strength * 60 * 0.012)
             const s = gw.strength*60;
             this.vx += (gx/gd)*s*.012;
             this.vy += (gy/gd)*s*.012;
@@ -2538,10 +2540,11 @@
     document.getElementById('control-panel').classList.remove('visible');
 
     // Start outward repeller well
-    ParticleSystem.setGravityWell(CX(), CY(), 0.35, true);
+    // Order matters: stop clears gravWell→null, so we must set AFTER stop
     if (typeof window.stopGravityWellIdle === 'function') {
       window.stopGravityWellIdle();
     }
+    ParticleSystem.setGravityWell(CX(), CY(), 0.35, true);
     if (typeof window.startGravityWellIdle === 'function') {
       window.startGravityWellIdle();
     }
@@ -2645,17 +2648,20 @@
                         document.getElementById('receive-progress').classList.contains('visible') ||
                         document.getElementById('receive-success').classList.contains('visible');
 
+    // Cancel sender animation loop (IIFE-local to Chapter 3)
     if (transferRafId) { cancelAnimationFrame(transferRafId); transferRafId = null; }
-    if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
 
+    // Reset sender-side state (IIFE-local to Chapter 3)
     isTransferring = false;
     sphereFormed = false;
     currentProgress = 0;
     currentSpeed = 0;
 
-    rxTransferActive = false;
-    rxProgress = 0;
-    rxSpeed = 0;
+    // Cancel receiver animation loops via Chapter 4's exposed cleanup
+    // (fixes cross-scope IIFE bug: rxRafId/rxTransferActive are in Ch4's closure)
+    if (typeof window.stopReceiverAnimation === 'function') {
+      window.stopReceiverAnimation();
+    }
 
     document.getElementById('progress-screen').classList.remove('visible');
     document.getElementById('receive-progress').classList.remove('visible');
@@ -2663,7 +2669,7 @@
     document.getElementById('transfer-error-screen').classList.remove('visible');
     
     hideCancelConfirm();
-    if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
+    if (typeof window.hideRxCancelConfirm === 'function') window.hideRxCancelConfirm();
 
     if (typeof window.stopGravityWellIdle === 'function') {
       window.stopGravityWellIdle();
@@ -2784,6 +2790,7 @@
   let rxSpeed = 0;            // MB/s
   let rxTransferActive = false;
   let rxRafId = null;
+  let incomingSphereRafId = null; // hoisted from animateIncomingSphere for cancellation
 
   /* ── HELPERS ── */
   function getFileIcon(name) {
@@ -2880,7 +2887,8 @@
 
     function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
 
-    let animRaf;
+    // Use IIFE-scoped incomingSphereRafId so cancel can reach it
+    if (incomingSphereRafId) { cancelAnimationFrame(incomingSphereRafId); incomingSphereRafId = null; }
     function step() {
       const elapsed = Date.now() - startTime;
       const raw = Math.min(elapsed / DURATION, 1);
@@ -2927,8 +2935,9 @@
       }
 
       if (raw < 1) {
-        animRaf = requestAnimationFrame(step);
+        incomingSphereRafId = requestAnimationFrame(step);
       } else {
+        incomingSphereRafId = null;
         rCtx.clearRect(0, 0, rc.width, rc.height);
         rc.style.display = 'none';
 
@@ -2952,7 +2961,7 @@
         if (onArrived) onArrived();
       }
     }
-    animRaf = requestAnimationFrame(step);
+    incomingSphereRafId = requestAnimationFrame(step);
   }
 
   /* ── RIPPLE RINGS ── (3 staggered rings after receive) */
@@ -3137,9 +3146,31 @@
     document.getElementById('rx-cancel-confirm').classList.remove('visible');
   };
 
+  /**
+   * stopReceiverAnimation — exposed globally so Chapter 3's onTransferCancelled
+   * can properly cancel Chapter 4's IIFE-scoped animation loops.
+   * This fixes the cross-scope variable bug where rxRafId/rxTransferActive
+   * were silently creating implicit globals instead of modifying the real vars.
+   */
+  window.stopReceiverAnimation = function() {
+    if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
+    if (incomingSphereRafId) { cancelAnimationFrame(incomingSphereRafId); incomingSphereRafId = null; }
+    rxTransferActive = false;
+    rxProgress = 0;
+    rxSpeed = 0;
+    // Clear the ripple canvas in case incoming sphere was mid-flight
+    const rc = document.getElementById('ripple-canvas');
+    if (rc) {
+      const rCtx = rc.getContext('2d');
+      rCtx.clearRect(0, 0, rc.width, rc.height);
+      rc.style.display = 'none';
+    }
+  };
+
   /* ── LEAVE RECEIVER ── */
   window.leaveReceiver = function leaveReceiver() {
-    if (rxRafId) cancelAnimationFrame(rxRafId);
+    if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
+    if (incomingSphereRafId) { cancelAnimationFrame(incomingSphereRafId); incomingSphereRafId = null; }
     rxTransferActive = false; rxProgress = 0; rxSpeed = 0;
     if (typeof window.stopGravityWellIdle === 'function') {
       window.stopGravityWellIdle();
