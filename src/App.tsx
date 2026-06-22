@@ -329,6 +329,8 @@ export default function App() {
                 size: currentFile.size,
                 totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
                 chunkSize: CHUNK_SIZE,
+                batchIndex: currentFileIndexRef.current,
+                batchCount: selectedFilesRef.current.length
               }
             });
             openCtrl.forEach(c => c.send(meta));
@@ -631,7 +633,9 @@ export default function App() {
           type: fileToSend.type,
           size: fileToSend.size,
           totalChunks: Math.ceil(fileToSend.size / CHUNK_SIZE),
-          chunkSize: CHUNK_SIZE
+          chunkSize: CHUNK_SIZE,
+          batchIndex: currentFileIndexRef.current,
+          batchCount: selectedFilesRef.current.length
         };
         openCtrl.forEach(c => c.send(JSON.stringify({ type: "FILE_META", file: fileMeta })));
         setMessages((prev) => [...prev, `SYSTEM: Grabbed "${fileToSend.name}" (${fileNum}/${totalFiles}). FILE_META sent. Waiting for receiver to drop...`]);
@@ -856,7 +860,13 @@ export default function App() {
       setReceivedFiles(prev => [newFile, ...prev]);
 
       const url = URL.createObjectURL(blob);
-      (window as any).onFileReceivedSuccess?.({ name: fileName, size: blob.size, url });
+      (window as any).onFileReceivedSuccess?.({
+        name: fileName,
+        size: blob.size,
+        url,
+        batchIndex: incomingFileRef.current?.batchIndex ?? 0,
+        batchCount: incomingFileRef.current?.batchCount ?? 1
+      });
     }
 
     setIncomingFile(null);
@@ -903,14 +913,26 @@ export default function App() {
           setMessages(prev => [...prev, `SYSTEM: ✅ Received: "${fileName}" — tap the Download button to save.`]);
 
           const url = URL.createObjectURL(file);
-          (window as any).onFileReceivedSuccess?.({ name: fileName, size: file.size, url });
+          (window as any).onFileReceivedSuccess?.({
+            name: fileName,
+            size: file.size,
+            url,
+            batchIndex: incomingFileRef.current?.batchIndex ?? 0,
+            batchCount: incomingFileRef.current?.batchCount ?? 1
+          });
         }).catch((err: any) => {
           console.error('Failed to retrieve OPFS file:', err);
           setMessages(prev => [...prev, `ERROR: Failed to read received file "${fileName}": ${err?.message ?? err}`]);
         });
       } else {
         setMessages(prev => [...prev, `SYSTEM: ✓ Saved to folder: ${fileName} directly to disk.`]);
-        (window as any).onFileReceivedSuccess?.({ name: fileName, size: incomingFileRef.current?.size ?? 0, url: null });
+        (window as any).onFileReceivedSuccess?.({
+          name: fileName,
+          size: incomingFileRef.current?.size ?? 0,
+          url: null,
+          batchIndex: incomingFileRef.current?.batchIndex ?? 0,
+          batchCount: incomingFileRef.current?.batchCount ?? 1
+        });
       }
     }
   };
@@ -1172,7 +1194,9 @@ export default function App() {
               type: currentFile.type,
               size: currentFile.size,
               totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
-              chunkSize: CHUNK_SIZE
+              chunkSize: CHUNK_SIZE,
+              batchIndex: currentFileIndexRef.current,
+              batchCount: selectedFilesRef.current.length
             }
           });
           controlConnRef.current.forEach(c => {
@@ -1190,7 +1214,9 @@ export default function App() {
               type: currentFile.type,
               size: currentFile.size,
               totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
-              chunkSize: CHUNK_SIZE
+              chunkSize: CHUNK_SIZE,
+              batchIndex: currentFileIndexRef.current,
+              batchCount: selectedFilesRef.current.length
             }
           });
           controlConnRef.current.forEach(c => {
@@ -1454,7 +1480,9 @@ export default function App() {
                     type: nextFile.type,
                     size: nextFile.size,
                     totalChunks: Math.ceil(nextFile.size / CHUNK_SIZE),
-                    chunkSize: CHUNK_SIZE
+                    chunkSize: CHUNK_SIZE,
+                    batchIndex: nextIdx,
+                    batchCount: selectedFilesRef.current.length
                   }
                 }));
               });

@@ -20,9 +20,9 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
   - **Files**: `src/App.tsx`
   - **Status**: Completed
 
-- [ ] **Task 5**: Multi-File Batch Transfer Support
+- [x] **Task 5**: Multi-File Batch Transfer Support
   - **Files**: `src/App.tsx`, `index.html`
-  - **Status**: Pending
+  - **Status**: Completed
 
 - [ ] **Task 6**: Remove File Size Warning Modal (>= 500MB)
   - **Files**: `index.html`

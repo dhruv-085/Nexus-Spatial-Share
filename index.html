@@ -3033,13 +3033,14 @@
     document.getElementById('receive-progress').classList.add('visible');
   }
 
-  function completeReceive(filename, totalBytes, url) {
+  function completeReceive(filename, totalBytes, url, batchIndex = 0, batchCount = 1) {
     if (rxRafId) cancelAnimationFrame(rxRafId);
     document.getElementById('receive-progress').classList.remove('visible');
     if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
 
-    // Play 3 ripple rings then show success
-    playRipple(() => {
+    const isLast = (batchIndex + 1) >= batchCount;
+
+    const finalize = () => {
       // Add to files list
       const fileEntry = {
         name: filename,
@@ -3052,19 +3053,38 @@
       renderFilesPanel();
       updatePanelToggle();
 
-      // Show success state
-      document.getElementById('receive-success-filename').textContent = filename + ' · ' + fmt(totalBytes);
-      document.getElementById('receive-success').classList.add('visible');
-      Toast.show('File received: ' + filename, 'success');
+      if (isLast) {
+        // Show success state
+        document.getElementById('receive-success-filename').textContent = filename + ' · ' + fmt(totalBytes);
+        document.getElementById('receive-success').classList.add('visible');
+        Toast.show('File received: ' + filename, 'success');
 
-      // After 5s, reset gravity well for next transfer
-      setTimeout(() => {
-        if (document.getElementById('receive-success').classList.contains('visible')) {
-          // Auto-dismiss success, reform gravity well
-          dismissSuccess();
-        }
-      }, 6000);
-    });
+        // After 6s, reset gravity well for next transfer
+        setTimeout(() => {
+          if (document.getElementById('receive-success').classList.contains('visible')) {
+            // Auto-dismiss success, reform gravity well
+            dismissSuccess();
+          }
+        }, 6000);
+      } else {
+        // Multi-file transfer: do NOT show success screen yet. Keep waiting for the next file
+        Toast.show(`Received ${batchIndex + 1} of ${batchCount}: ${filename}`, 'success');
+        
+        // Hide success screen if visible (just in case)
+        document.getElementById('receive-success').classList.remove('visible');
+        
+        // Re-enable gravity well UI and keep it ready for next file
+        document.getElementById('gravity-well-ui').classList.remove('hidden');
+      }
+    };
+
+    if (isLast) {
+      // Play 3 ripple rings then show success
+      playRipple(finalize);
+    } else {
+      // No blocking ripple animation, finalize immediately so we don't block the next file's progress UI!
+      finalize();
+    }
 
     rxTransferActive = false;
     if (typeof window.stopGravityWellIdle === 'function') {
@@ -3121,15 +3141,17 @@
   };
 
   /** Called when file is fully assembled: add to panel + show success + trigger download */
-  window.onFileReceivedSuccess = function({ name, size, url }) {
+  window.onFileReceivedSuccess = function({ name, size, url, batchIndex, batchCount }) {
     // Stop fake step loop if running
     if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
     document.getElementById('receive-progress').classList.remove('visible');
     // Wire download button to real blob URL
-    const dlBtn = document.getElementById('btn-download-main');
-    dlBtn.onclick = () => { const a=document.createElement('a'); a.href=url; a.download=name; a.click(); };
-    // Use existing completeReceive flow but with real data
-    completeReceive(name, size, url);
+    if (url) {
+      const dlBtn = document.getElementById('btn-download-main');
+      dlBtn.onclick = () => { const a=document.createElement('a'); a.href=url; a.download=name; a.click(); };
+    }
+    // Use existing completeReceive flow but with real data and batch metrics
+    completeReceive(name, size, url, batchIndex, batchCount);
   };
 
   // Keep local rxMeta ref for updateReceiverProgress ETA calc
