@@ -66,7 +66,10 @@ This file documents all bugs fixed in this project. **All future agent sessions 
 ## 9. Sender Repeller Particle Symmetry
 * **Symptom**: Sender's outward-shooting particles were too fast and too dense compared to the receiver's inward-converging particles, breaking visual symmetry.
 * **Root Cause**: Repeller reset speed was `1.5 + Math.random() * 1.0` (1.5–2.5 units/frame) — 5-9× faster than the attractor's reset speed of `(Math.random()-.5)*.4` (~0–0.28 units/frame). The attractor lets its force do the gradual acceleration; the repeller was launching at terminal velocity.
-* **Fix**: Changed repeller reset speed from polar angles to the exact Cartesian formula used by the attractor: `this.vx = (Math.random() - 0.5) * 0.4` and `this.vy = (Math.random() - 0.5) * 0.4`. Kept the spawn offset at `(Math.random() - 0.5) * 6` to match the attractor's center distance threshold. This makes the initial velocity and position distribution mathematically identical to the attractor's, allowing the opposite forces to accelerate them symmetrically.
+* **Fix**: Fine-tuned the repeller particle dynamics for a smooth, symmetric visual feel:
+  1. **All Particles Active**: Restored 100% of particles to the outward repelling animation (no subset filter).
+  2. **Fade-In on Reset**: Set `this.alpha = 0.25` on center reset and added a `0.014` additional fade-in increment per frame (for a total of `0.02` per frame). This makes the particles reach full opacity in ~0.6 seconds, resolving the "too dim" symptom while maintaining smooth entry without visual popping.
+  3. **Tuned Pacing**: Decreased the repelling force multiplier to `0.008` (from the original `0.012`) and center reset speed to `0.2` (from the original `0.4`) for smoother, gentler acceleration.
 
 ---
 
@@ -74,5 +77,17 @@ This file documents all bugs fixed in this project. **All future agent sessions 
 * **Symptom**: Sender's repeller particles move inward (attractor behavior) instead of outward during send animation.
 * **Root Cause**: In the grab handler, `setGravityWell(isRepeller=true)` was called BEFORE `stopGravityWellIdle()`. Since `stopGravityWellIdle()` calls `clearGravityWell()` which sets `gravWell=null`, it immediately wiped the repeller state. When `startGravityWellIdle()` then ran its first `oscillate()` frame, `isRepeller()` read `null` → returned `false` → set attractor mode permanently.
 * **Fix**: Reordered to **stop → set → start**: stop the old loop (clears gravWell), then set the repeller well (gravWell.isRepeller=true), then start the new oscillation loop (reads the fresh repeller state).
+
+---
+
+## 11. Symmetrical Files Drawer Toggle Visibility & Transition Overlaps
+* **Symptom**: Transitioning from sender to receiver screen left elements overlapping or in incorrect visual states, and the files drawer toggle button disappeared/reset inconsistently when changing roles even if files existed.
+* **Root Cause**: 
+  1. `transitionToReceiver` mistakenly targeted and hid the `receiver-screen` instead of the `sender-screen`.
+  2. Manual `visible` class overrides on `#files-panel-toggle` (such as in `transitionToSender`, `leaveReceiver`, and `initReceiverMode`) did not check the actual received file count.
+* **Fix**:
+  1. Restored the `sender-screen` hide logic inside `transitionToReceiver`.
+  2. Exposed `updatePanelToggle` as a global function (`window.updatePanelToggle`) so all modules can access it.
+  3. Replaced manual visibility overrides with symmetric `window.updatePanelToggle?.()` calls in transitions, dynamically verifying the received file buffer count (`rxFiles.length > 0`) before adding or removing the `visible` class.
 
 ---

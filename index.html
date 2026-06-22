@@ -2367,7 +2367,7 @@
     document.getElementById('home-screen').classList.add('hidden');
     document.getElementById('card-bloom').style.display = 'none';
 
-    // Hide sender and transfer/progress screens to prevent overlap
+    // Hide sender and progress/success screens to prevent overlap
     document.getElementById('sender-screen').classList.remove('visible');
     document.getElementById('progress-screen').classList.remove('visible');
     document.getElementById('success-screen').classList.remove('visible');
@@ -2380,10 +2380,9 @@
       if (typeof window.leaveReceiver === 'function') window.leaveReceiver();
     };
 
-    // NOTE: gravity well does NOT start here — particles drift freely until a file arrives
     setTimeout(() => {
       document.getElementById('receiver-screen').classList.add('visible');
-      document.getElementById('files-panel-toggle')?.classList.add('visible');
+      window.updatePanelToggle?.();
       document.getElementById('rx-dev-panel')?.classList.add('visible');
     }, 340);
   };
@@ -2457,7 +2456,7 @@
 
     // Hide receiver and progress/success screens to prevent overlap
     document.getElementById('receiver-screen').classList.remove('visible');
-    document.getElementById('files-panel-toggle')?.classList.remove('visible');
+    window.updatePanelToggle?.();
     document.getElementById('rx-dev-panel')?.classList.remove('visible');
     document.getElementById('progress-screen').classList.remove('visible');
     document.getElementById('success-screen').classList.remove('visible');
@@ -2858,7 +2857,7 @@
     // NOTE: gravity well does NOT start here — particles drift freely until a file arrives
     setTimeout(() => {
       document.getElementById('receiver-screen').classList.add('visible');
-      document.getElementById('files-panel-toggle')?.classList.add('visible');
+      updatePanelToggle();
     }, 340);
   }
 
@@ -3221,7 +3220,6 @@
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
     document.getElementById('receiver-screen').classList.remove('visible');
-    document.getElementById('files-panel-toggle')?.classList.remove('visible');
     document.getElementById('files-panel').classList.remove('open');
     document.getElementById('rx-dev-panel')?.classList.remove('visible');
 
@@ -3270,8 +3268,18 @@
   }
 
   function updatePanelToggle() {
-    document.getElementById('files-count').textContent = rxFiles.length;
+    const count = rxFiles.length;
+    document.getElementById('files-count').textContent = count;
+    const toggleBtn = document.getElementById('files-panel-toggle');
+    if (toggleBtn) {
+      if (count > 0) {
+        toggleBtn.classList.add('visible');
+      } else {
+        toggleBtn.classList.remove('visible');
+      }
+    }
   }
+  window.updatePanelToggle = updatePanelToggle;
 
   // Download stub (wired by backend in Ch7)
   window.rxDownload = function(idx, btnEl) {
