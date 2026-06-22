@@ -1978,18 +1978,19 @@
           const gx=this.x-gw.x,gy=this.y-gw.y,gd=Math.sqrt(gx*gx+gy*gy)||1;
           // Symmetrical boundary: same 0.5 * diagonal threshold as attractor center-reset
           if (gd > Math.max(canvas.width, canvas.height) * 0.5 || this.x < 2 || this.x > canvas.width - 2 || this.y < 2 || this.y > canvas.height - 2) {
-            // Reset to center with low initial drift — let the repeller force
-            // gradually accelerate outward, mirroring attractor's gradual inward pull.
-            // Attractor resets at (Math.random()-.5)*.4 ≈ 0–0.28 magnitude.
+            // Reset to center with low initial drift and fade-in to prevent visual popping/flashing at center
             this.x = gw.x + (Math.random() - 0.5) * 6;
             this.y = gw.y + (Math.random() - 0.5) * 6;
-            this.vx = (Math.random() - 0.5) * 0.4;
-            this.vy = (Math.random() - 0.5) * 0.4;
+            this.vx = (Math.random() - 0.5) * 0.2;
+            this.vy = (Math.random() - 0.5) * 0.2;
+            this.alpha = 0.25; // Start slightly visible to avoid starting completely dark
           } else {
-            // Same force constant as attractor (strength * 60 * 0.012)
+            // Accelerate fade-in for repeller particles (adds to the base 0.006 increment for 0.02 total)
+            if (this.alpha < 1) this.alpha = Math.min(1, this.alpha + 0.014);
+            // Smooth repelling force (0.008 for optimal visual acceleration)
             const s = gw.strength*60;
-            this.vx += (gx/gd)*s*.012;
-            this.vy += (gy/gd)*s*.012;
+            this.vx += (gx/gd)*s*.008;
+            this.vy += (gy/gd)*s*.008;
           }
         } else {
           const gx=gw.x-this.x,gy=gw.y-this.y,gd=Math.sqrt(gx*gx+gy*gy);
@@ -2298,8 +2299,11 @@
     if(code.length<4){document.getElementById('join-error').textContent='Enter all 4 digits.';return;}
     if(code==='0000'){showRoomError('Room not found.');return;}
     if(code==='9999'){showRoomError('Room is full.');return;}
-    // If real socket is connected, use it — otherwise fall through to UI role picker
-    if (window._socketJoinRoom && window._socketIsConnected && window._socketIsConnected()) {
+    // Always use real socket if defined, buffer emit if disconnected
+    if (window._socketJoinRoom) {
+      if (window._socketIsConnected && !window._socketIsConnected()) {
+        document.getElementById('join-error').textContent='Connecting to signaling server... please wait.';
+      }
       window._socketJoinRoom(code); return;
     }
     showRolePicker(code);
@@ -2395,10 +2399,13 @@
     clearError();const code=String(Math.floor(1000+Math.random()*9000));
     resetGlobe();for(let i=0;i<4;i++){setDigit(i,code[i]);setTimeout(()=>triggerGlobe(i),i*80);}
     setTimeout(updateQR,400);
-    // If real socket connected, emit — otherwise show role picker for UI testing
+    // Always use real socket if defined, buffer emit if disconnected
     setTimeout(() => {
-      if (window._socketIsConnected && window._socketIsConnected()) {
-        if (window._socketCreateRoom) window._socketCreateRoom(code);
+      if (window._socketCreateRoom) {
+        if (window._socketIsConnected && !window._socketIsConnected()) {
+          document.getElementById('join-error').textContent='Connecting to signaling server... please wait.';
+        }
+        window._socketCreateRoom(code);
       } else {
         showRolePicker(code);
       }
