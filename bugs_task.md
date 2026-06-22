@@ -24,9 +24,9 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
   - **Files**: `src/App.tsx`, `index.html`
   - **Status**: Completed
 
-- [ ] **Task 6**: Remove File Size Warning Modal (>= 500MB)
+- [x] **Task 6**: Remove File Size Warning Modal (>= 500MB)
   - **Files**: `index.html`
-  - **Status**: Pending
+  - **Status**: Completed
 
 - [ ] **Task 7**: Stuck Visual States Recovery (Idle Transition)
   - **Files**: `src/App.tsx`, `index.html`

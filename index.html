@@ -3573,38 +3573,7 @@
   // so large-file check fires before sphere forms.
   // We listen at capture phase before the original handler.
   (function patchGrabButton() {
-    const grabBtn = document.getElementById('btn-grab');
-    if (!grabBtn) return;
-    let largeFileConfirmed = false;
-    grabBtn.addEventListener('click', function interceptGrab(e) {
-      // If we just confirmed large file, skip check this one time
-      if (largeFileConfirmed) { largeFileConfirmed = false; return; }
-
-      const queueItems = document.querySelectorAll('.queue-item');
-      if (queueItems.length === 0) return;
-
-      let maxBytes = 0;
-      document.querySelectorAll('.queue-file-size').forEach(el => {
-        const txt = el.textContent.trim();
-        let bytes = 0;
-        if (txt.includes('GB'))      bytes = parseFloat(txt) * 1073741824;
-        else if (txt.includes('MB')) bytes = parseFloat(txt) * 1048576;
-        else if (txt.includes('KB')) bytes = parseFloat(txt) * 1024;
-        else bytes = parseFloat(txt);
-        if (bytes > maxBytes) maxBytes = bytes;
-      });
-
-      if (maxBytes >= 500 * 1024 * 1024) {
-        e.stopImmediatePropagation();
-        const sizeStr = maxBytes >= 1073741824
-          ? (maxBytes / 1073741824).toFixed(2) + ' GB'
-          : (maxBytes / 1048576).toFixed(0) + ' MB';
-        lfmBody.innerHTML = `This file is <strong>${sizeStr}</strong>. Transfer may take longer on slow connections and use significant memory.`;
-        lfmProceedFn = () => { largeFileConfirmed = true; grabBtn.click(); };
-        lfmCancelFn = null;
-        lfModal.classList.add('visible');
-      }
-    }, true);
+    // Large file check warning disabled.
   })();
 
   /* ─────────────────────────────────────────────
