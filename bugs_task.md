@@ -16,9 +16,9 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
   - **Files**: `index.html`
   - **Status**: Completed
 
-- [ ] **Task 4**: Clean WebRTC State Residuals on Connection Reset
+- [x] **Task 4**: Clean WebRTC State Residuals on Connection Reset
   - **Files**: `src/App.tsx`
-  - **Status**: Pending
+  - **Status**: Completed
 
 - [ ] **Task 5**: Multi-File Batch Transfer Support
   - **Files**: `src/App.tsx`, `index.html`

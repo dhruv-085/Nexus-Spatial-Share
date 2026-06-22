@@ -994,6 +994,17 @@ export default function App() {
     isTransferringRef.current = false;
     setIsTransferring(false);
 
+    // Reset all transfer-specific states to prevent stale role configurations on reconnection
+    setIsSource(false);
+    isSourceRef.current = false;
+    setIsGlobalLocked(false);
+    isGlobalLockedRef.current = false;
+    setIncomingFile(null);
+    incomingFileRef.current = null;
+    setIsGrabbedPermanent(false);
+    setSelectedFiles([]);
+    selectedFilesRef.current = [];
+
     if (socketRef.current && roomCodeRef.current.length === 4) {
       setTimeout(() => {
         socketRef.current?.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
