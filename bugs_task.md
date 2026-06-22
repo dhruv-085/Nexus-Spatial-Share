@@ -8,9 +8,9 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
   - **Files**: `index.html`
   - **Status**: Completed
 
-- [ ] **Task 2**: Fix Grab Gesture (Trigger Progress UI & Metrics)
+- [x] **Task 2**: Fix Grab Gesture (Trigger Progress UI & Metrics)
   - **Files**: `src/App.tsx`
-  - **Status**: Pending
+  - **Status**: Completed
 
 - [ ] **Task 3**: Remove Receiver Left Sweep Animation
   - **Files**: `index.html`

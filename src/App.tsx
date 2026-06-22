@@ -564,8 +564,7 @@ export default function App() {
           if (isFist && lastGestureRef.current !== "fist" && selectedFilesRef.current.length > 0) {
             console.log("GESTURE: GRAB DETECTED - Files:", selectedFilesRef.current.length);
             lastGestureRef.current = "fist";
-            handleGrabAction();
-            simulateGrab();
+            document.getElementById('btn-grab')?.click();
           } else if (!isFist) {
             lastGestureRef.current = "none";
           }
