@@ -35,3 +35,32 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
 - [x] **Task 8**: Symmetrical Files Drawer Toggle Visibility
   - **Files**: `index.html`
   - **Status**: Completed
+
+- [x] **Task 9**: Safe Area Top Bar (Chopped Mobile Logo)
+  - **Files**: `index.html`
+  - **Status**: Completed
+
+- [x] **Task 10**: Dynamic Multi-File Progress Labels ("File X of Y")
+  - **Files**: `src/App.tsx`, `index.html`
+  - **Status**: Completed
+
+- [x] **Task 11**: Received Files List Display (escapeHTML Closure Fix)
+  - **Files**: `index.html`
+  - **Status**: Completed
+
+- [x] **Task 12**: Sender Stuck Loop & Early Exit resolution
+  - **Files**: `src/App.tsx`
+  - **Status**: Completed
+
+- [x] **Task 13**: Concurrent Directory Picker Lock
+  - **Files**: `src/App.tsx`
+  - **Status**: Completed
+
+- [x] **Task 14**: Receiver Backup Warning Toast Notification
+  - **Files**: `index.html`
+  - **Status**: Completed
+
+- [x] **Task 15**: Page Initialization Loader Blocking
+  - **Files**: `index.html`
+  - **Status**: Completed
+

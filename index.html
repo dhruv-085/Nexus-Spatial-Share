@@ -125,9 +125,11 @@
     ══════════════════════════════════════════════ */
     #top-bar {
       position: fixed; top: 0; left: 0; right: 0;
-      height: 56px;
+      height: calc(56px + env(safe-area-inset-top, 0px));
+      padding-top: env(safe-area-inset-top, 0px);
       display: flex; align-items: center; justify-content: space-between;
-      padding: 0 24px;
+      padding-left: calc(24px + env(safe-area-inset-left, 0px));
+      padding-right: calc(24px + env(safe-area-inset-right, 0px));
       background: rgba(5,5,5,0.7);
       backdrop-filter: blur(24px) saturate(180%);
       -webkit-backdrop-filter: blur(24px) saturate(180%);
@@ -2296,6 +2298,10 @@
 
   /* JOIN / CREATE */
   function joinRoom(){
+    if (document.readyState !== 'complete' || typeof window._socketJoinRoom !== 'function') {
+      document.getElementById('join-error').textContent = 'Please wait, the website is still loading...';
+      return;
+    }
     const code=getCode();
     if(code.length<4){document.getElementById('join-error').textContent='Enter all 4 digits.';return;}
     if(code==='0000'){showRoomError('Room not found.');return;}
@@ -2396,6 +2402,10 @@
   };
   document.getElementById('btn-join').addEventListener('click',joinRoom);
   document.getElementById('btn-create').addEventListener('click',()=>{
+    if (document.readyState !== 'complete' || typeof window._socketCreateRoom !== 'function') {
+      document.getElementById('join-error').textContent = 'Please wait, the website is still loading...';
+      return;
+    }
     clearError();const code=String(Math.floor(1000+Math.random()*9000));
     resetGlobe();for(let i=0;i<4;i++){setDigit(i,code[i]);setTimeout(()=>triggerGlobe(i),i*80);}
     setTimeout(updateQR,400);
@@ -2586,7 +2596,7 @@
   });
 
   /* ── SENDER PROGRESS HOOK ── */
-  window.updateSenderProgress = function(progress, speedMbps) {
+  window.updateSenderProgress = function(progress, speedMbps, batchIndex, batchCount) {
     const circumference = 502;
     const offset = circumference * (1 - progress);
     const ringEl = document.getElementById('progress-ring');
@@ -2594,10 +2604,23 @@
     const pctEl = document.getElementById('progress-pct');
     if (pctEl) pctEl.textContent = Math.floor(progress * 100);
 
-    const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
+    const idx = (typeof batchIndex === 'number') ? batchIndex : 0;
+    const count = (typeof batchCount === 'number') ? batchCount : fileQueue.length;
+
+    const fileLabelEl = document.getElementById('progress-file-label');
+    if (fileLabelEl) {
+      fileLabelEl.textContent = count > 1 ? `File ${idx + 1} of ${count}` : '';
+    }
+
     const filenameEl = document.getElementById('progress-filename');
     if (filenameEl) {
-      filenameEl.textContent = fileQueue.length > 1 ? `Sending ${fileQueue.length} files...` : firstName;
+      if (count > 1) {
+        const curFile = fileQueue[idx];
+        filenameEl.textContent = curFile ? curFile.name : `Sending files...`;
+      } else {
+        const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
+        filenameEl.textContent = firstName;
+      }
     }
 
     if (speedMbps > 0) {
@@ -3018,7 +3041,7 @@
     requestAnimationFrame(step);
   }
 
-  function startReceive(filename, totalBytes) {
+  function startReceive(filename, totalBytes, batchIndex, batchCount) {
     if (rxTransferActive) return;
     rxTransferActive = true;
     rxProgress = 0; rxSpeed = 0;
@@ -3031,12 +3054,20 @@
     startGravityWellIdle();
 
     // Sphere consumed — show receive progress ring
-    showReceiveProgress(filename, totalBytes);
+    showReceiveProgress(filename, totalBytes, batchIndex, batchCount);
   }
 
-  function showReceiveProgress(filename, totalBytes) {
+  function showReceiveProgress(filename, totalBytes, batchIndex, batchCount) {
     document.getElementById('receive-filename').textContent = filename;
     document.getElementById('receive-stats').textContent = '— Receiving…';
+    
+    const idx = (typeof batchIndex === 'number') ? batchIndex : 0;
+    const count = (typeof batchCount === 'number') ? batchCount : 1;
+    const labelEl = document.querySelector('#receive-progress .receive-label');
+    if (labelEl) {
+      labelEl.textContent = count > 1 ? `Receiving (File ${idx + 1} of ${count})...` : 'Receiving...';
+    }
+
     document.getElementById('receive-progress').classList.add('visible');
   }
 
@@ -3065,6 +3096,11 @@
         document.getElementById('receive-success-filename').textContent = filename + ' · ' + fmt(totalBytes);
         document.getElementById('receive-success').classList.add('visible');
         Toast.show('File received: ' + filename, 'success');
+
+        // Warn user to download manually from files panel if not auto-downloaded
+        setTimeout(() => {
+          Toast.show('Download files from files section if not downloaded automatically', 'info');
+        }, 1200);
 
         // After 6s, reset gravity well for next transfer
         setTimeout(() => {
@@ -3134,8 +3170,8 @@
   /* ── CH7 RECEIVER HOOKS — called by Ch7 real WebRTC wiring ── */
 
   /** Called when meta frame arrives: start incoming sphere + gravity well */
-  window.triggerIncomingSphere = function(filename, totalBytes) {
-    startReceive(filename, totalBytes);
+  window.triggerIncomingSphere = function(filename, totalBytes, batchIndex, batchCount) {
+    startReceive(filename, totalBytes, batchIndex, batchCount);
   };
 
   /** Called each chunk: update progress ring with real values */
@@ -3170,9 +3206,9 @@
   // Keep local rxMeta ref for updateReceiverProgress ETA calc
   let rxMeta = null;
   const _origStartReceive = startReceive;
-  startReceive = function(filename, totalBytes) {
+  startReceive = function(filename, totalBytes, batchIndex, batchCount) {
     rxMeta = { name: filename, size: totalBytes };
-    _origStartReceive(filename, totalBytes);
+    _origStartReceive(filename, totalBytes, batchIndex, batchCount);
   };
 
   /* ── RECEIVER CANCEL CONFIRM ── */
@@ -3239,6 +3275,13 @@
     // Ch7: emit leave-room
     if (window._socketLeaveRoom) window._socketLeaveRoom();
   };
+
+  /* ── SECURITY HELPER ── */
+  function escapeHTML(str) {
+    return String(str).replace(/[&<>'"/]/g, function(m) {
+      return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;','/':'&#x2F;'}[m]);
+    });
+  }
 
   /* ── FILES PANEL ── */
   function renderFilesPanel() {

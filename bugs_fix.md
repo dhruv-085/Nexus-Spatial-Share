@@ -131,9 +131,9 @@ This document outlines the identified bugs in the Nexus Spatial Share web applic
 * **Symptom**: The sender's outward-shooting particles were too fast and too dense compared to the receiver's inward-converging particles, breaking visual symmetry.
 * **Root Cause**: Repeller reset speed was `1.5 + Math.random() * 1.0` (1.5–2.5 units/frame) — 5-9× faster than the attractor's reset speed of `(Math.random()-.5)*.4` (~0–0.28 units/frame). The attractor lets its force do the gradual acceleration; the repeller was launching at terminal velocity.
 * **Fix Applied** (in `index.html`, Chapter 1 Particle System):
-  1. **Matched initial outward speed and formula**: Changed particle reset speed from polar angles to the exact Cartesian formula used by the attractor: `this.vx = (Math.random() - 0.5) * 0.4` and `this.vy = (Math.random() - 0.5) * 0.4`.
-  2. **Matched center offset range**: Particles now respawn with `(Math.random() - 0.5) * 6` pixel jitter around the center, matching the attractor's center distance threshold.
-  3. **Preserved identical force constant**: The outward acceleration force `gw.strength * 60 * 0.012` is unchanged and matches the attractor's pull force exactly, ensuring symmetrical particle trajectory physics.
+  1. **All Particles Active**: Restored 100% of particles to the outward repelling animation (no subset filter).
+  2. **Fade-In on Reset**: Set `this.alpha = 0.25` on center reset and added a `0.014` additional fade-in increment per frame (for a total of `0.02` per frame). This makes the particles reach full opacity in ~0.6 seconds, resolving the "too dim" symptom while maintaining smooth entry without visual popping.
+  3. **Tuned Pacing**: Decreased the repelling force multiplier to `0.008` (from the original `0.012`) and center reset speed to `0.2` (from the original `0.4`) for smoother, gentler acceleration.
   4. **Preserved boundary behavior**: Same `0.5 * diagonal` distance threshold and screen-edge detection for particle recycling.
 
 ### ✅ Bug Fix: Sender Particles Moving Inward (Gravity Well Operation Order)

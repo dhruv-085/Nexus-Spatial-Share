@@ -34,6 +34,7 @@ export default function App() {
   const [receivedFiles, setReceivedFiles] = useState<{ name: string, blob: Blob | null, opfsHandle: any | null, id: string }[]>([]);
   const saveDirectoryHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const hasSaveDirectoryRef = useRef(false);
+  const isChoosingDirectoryRef = useRef(false);
   const opfsFileHandleRef = useRef<any>(null);
   // Tracks the FileSystemFileHandle for the current FSA stream (showSaveFilePicker path)
   // so we can delete the partial file if the transfer is cancelled mid-way.
@@ -847,7 +848,12 @@ export default function App() {
   const handleEngineComplete = (blob: Blob | null) => {
     if (isSourceRef.current) return;
 
-    const fileName = incomingFileRef.current?.name || "downloaded_file";
+    const meta = incomingFileRef.current;
+    const fileName = meta?.name || "downloaded_file";
+    const batchIndex = meta?.batchIndex ?? 0;
+    const batchCount = meta?.batchCount ?? 1;
+    const metaSize = meta?.size ?? 0;
+
     console.log(`CONSOLE: Finalizing file "${fileName}" (${blob ? 'buffered' : 'streamed to disk'})`);
 
     if (blob) {
@@ -864,8 +870,8 @@ export default function App() {
         name: fileName,
         size: blob.size,
         url,
-        batchIndex: incomingFileRef.current?.batchIndex ?? 0,
-        batchCount: incomingFileRef.current?.batchCount ?? 1
+        batchIndex,
+        batchCount
       });
     }
 
@@ -917,8 +923,8 @@ export default function App() {
             name: fileName,
             size: file.size,
             url,
-            batchIndex: incomingFileRef.current?.batchIndex ?? 0,
-            batchCount: incomingFileRef.current?.batchCount ?? 1
+            batchIndex,
+            batchCount
           });
         }).catch((err: any) => {
           console.error('Failed to retrieve OPFS file:', err);
@@ -928,10 +934,10 @@ export default function App() {
         setMessages(prev => [...prev, `SYSTEM: ✓ Saved to folder: ${fileName} directly to disk.`]);
         (window as any).onFileReceivedSuccess?.({
           name: fileName,
-          size: incomingFileRef.current?.size ?? 0,
+          size: metaSize,
           url: null,
-          batchIndex: incomingFileRef.current?.batchIndex ?? 0,
-          batchCount: incomingFileRef.current?.batchCount ?? 1
+          batchIndex,
+          batchCount
         });
       }
     }
@@ -943,13 +949,24 @@ export default function App() {
 
     if (fsaAvailable) {
       try {
-        if (!hasSaveDirectoryRef.current) {
-          const dirHandle = await (window as any).showDirectoryPicker({
-            mode: 'readwrite',
-            startIn: 'downloads',
-          });
-          saveDirectoryHandleRef.current = dirHandle;
-          hasSaveDirectoryRef.current = true;
+        if (!hasSaveDirectoryRef.current && !isChoosingDirectoryRef.current) {
+          isChoosingDirectoryRef.current = true;
+          try {
+            const dirHandle = await (window as any).showDirectoryPicker({
+              mode: 'readwrite',
+              startIn: 'downloads',
+            });
+            saveDirectoryHandleRef.current = dirHandle;
+            hasSaveDirectoryRef.current = true;
+          } finally {
+            isChoosingDirectoryRef.current = false;
+          }
+        } else if (!hasSaveDirectoryRef.current && isChoosingDirectoryRef.current) {
+          let waitTime = 0;
+          while (!hasSaveDirectoryRef.current && isChoosingDirectoryRef.current && waitTime < 15000) {
+            await new Promise(r => setTimeout(r, 100));
+            waitTime += 100;
+          }
         }
         if (saveDirectoryHandleRef.current) {
           const fileHandle = await saveDirectoryHandleRef.current.getFileHandle(fileName, { create: true });
@@ -1342,7 +1359,12 @@ export default function App() {
             newEngine.initReceiver(payload.file);
 
             if (typeof (window as any).triggerIncomingSphere === 'function') {
-              (window as any).triggerIncomingSphere(payload.file.name, payload.file.size);
+              (window as any).triggerIncomingSphere(
+                payload.file.name,
+                payload.file.size,
+                payload.file.batchIndex,
+                payload.file.batchCount
+              );
             }
 
             // Save location is chosen in handleDropAction (button) or falls through to
@@ -1775,12 +1797,17 @@ export default function App() {
         () => transferProgress / 100,
         () => telemetry?.speedMBps ?? 0
       );
-      (window as any).updateSenderProgress?.(transferProgress / 100, telemetry?.speedMBps ?? 0);
+      (window as any).updateSenderProgress?.(
+        transferProgress / 100,
+        telemetry?.speedMBps ?? 0,
+        currentFileIndex,
+        selectedFiles.length
+      );
     }
     if (isTransferring && !isSource) {
         (window as any).updateReceiverProgress?.(transferProgress / 100, telemetry?.speedMBps ?? 0);
     }
-  }, [isTransferring, isSource, transferProgress, telemetry]);
+  }, [isTransferring, isSource, transferProgress, telemetry, currentFileIndex, selectedFiles]);
 
   useEffect(() => {
     if (cameraError) (window as any).showCameraDeniedBanner?.();

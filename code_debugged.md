@@ -91,3 +91,53 @@ This file documents all bugs fixed in this project. **All future agent sessions 
   3. Replaced manual visibility overrides with symmetric `window.updatePanelToggle?.()` calls in transitions, dynamically verifying the received file buffer count (`rxFiles.length > 0`) before adding or removing the `visible` class.
 
 ---
+
+## 12. Chopped Mobile Logo (Notch Safe-Area Overlaps)
+* **Symptom**: On mobile devices (particularly iOS and Android notch devices), the top logo is chopped or cut off from above.
+* **Root Cause**: `#top-bar` used absolute `top: 0` positioning and a fixed `56px` height without accounting for browser safe-area insets, allowing physical status bars to cover the header logo.
+* **Fix**: Updated `#top-bar` styling in `index.html` to dynamically calculate height and padding using CSS env variables (`env(safe-area-inset-top, 0px)`).
+
+---
+
+## 13. Dynamic Multi-File Progress Labels ("File X of Y")
+* **Symptom**: When transferring multiple files, the progress label remained stuck on `"File 1 of N"` on both the sender and receiver screens.
+* **Root Cause**: The progress callbacks (`updateSenderProgress` and `updateReceiverProgress`) did not receive the current file index and total count parameters, leaving the text elements static.
+* **Fix**:
+  - Updated `updateSenderProgress` and `updateReceiverProgress` in `index.html` to accept `batchIndex` and `batchCount` arguments and update progress text elements dynamically.
+  - Passed these parameters from `src/App.tsx` during progress ticks and metadata arrivals.
+
+---
+
+## 14. Empty Received Files List Panel (escapeHTML Closure ReferenceError)
+* **Symptom**: Received files do not display in the files list panel, even though the total count is correct and the "Download All" action still works.
+* **Root Cause**: `renderFilesPanel()` (defined in Chapter 4 IIFE) calls `escapeHTML()` to sanitize filenames. However, `escapeHTML()` was defined as a local function in Chapter 3's IIFE, throwing a silent `ReferenceError` that halted list generation.
+* **Fix**: Defined a local `escapeHTML` helper function directly inside Chapter 4's IIFE scope in `index.html`.
+
+---
+
+## 15. Sender Stuck Loop & Receiver Early Exit
+* **Symptom**: During a multi-file transfer, only n-1 files are transferred successfully, the receiver exits to the success screen early, and the sender stays stuck in the sending loop permanently. On refresh, the receiver re-encounters the remaining unsent files.
+* **Root Cause**: `incomingFileRef.current` was set to `null` too early inside `handleEngineComplete` in `src/App.tsx`. When callbacks fired, the receiver evaluated `batchCount` as `undefined` (defaulting to `1`), concluding the first file was the final file, exiting the loop, and hanging the sender.
+* **Fix**: Cached metadata parameters early in `handleEngineComplete` before nulling `incomingFileRef.current`.
+
+---
+
+## 16. Multiple Directory Picker Prompts on Receiver
+* **Symptom**: When transferring a batch of 10 files, the user is prompted to choose a directory 10 times on the receiving laptop.
+* **Root Cause**: `showDirectoryPicker()` is asynchronous. Since multiple files complete their transfer before the user completes the folder selection for the first file, each file initiates its own directory prompt concurrently.
+* **Fix**: Implemented `isChoosingDirectoryRef` in `saveFileAsync` in `src/App.tsx`. Subsequent files check the flag and wait for the directory picker selection to complete before proceeding, allowing them to reuse the resolved handle.
+
+---
+
+## 17. Receiver Backup Warning Notification
+* **Symptom**: Users are unaware that received files are backed up in the files panel if the automatic download fails.
+* **Fix**: Added a secondary toast notification at the end of receiver completion instructing users they can download files from the files panel backup.
+
+---
+
+## 18. Pre-Initialization Room Joining
+* **Symptom**: Users joining or creating a room immediately upon slow network page loads bypass the socket initialization flow, leading to broken workspace screens.
+* **Root Cause**: Clicking Join/Create before React loads and binds `_socketJoinRoom` / `_socketCreateRoom` to the window falls back to mock picker menus.
+* **Fix**: Checked `document.readyState` and socket helper bindings at the start of click handlers, blocking actions with a loading notice if the system is still initializing.
+
+---
