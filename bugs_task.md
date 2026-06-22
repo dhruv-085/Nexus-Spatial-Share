@@ -28,9 +28,9 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
   - **Files**: `index.html`
   - **Status**: Completed
 
-- [ ] **Task 7**: Stuck Visual States Recovery (Idle Transition)
+- [x] **Task 7**: Stuck Visual States Recovery (Idle Transition)
   - **Files**: `src/App.tsx`, `index.html`
-  - **Status**: Pending
+  - **Status**: Completed
 
 - [ ] **Task 8**: Symmetrical Files Drawer Toggle Visibility
   - **Files**: `index.html`

@@ -1855,6 +1855,7 @@
   <div class="receive-success-file" id="receive-success-filename"></div>
   <button class="btn-download-main" id="btn-download-main">Download File</button>
   <div class="receive-success-sub-btns">
+    <button class="btn-rx-ghost" onclick="dismissSuccess()">Done</button>
     <button class="btn-rx-ghost" id="btn-rx-leave">Leave Room</button>
   </div>
 </div>
@@ -2696,8 +2697,15 @@
       if (typeof window.startGravityWellIdle === 'function') {
         window.startGravityWellIdle();
       }
-      if (roomCodeText && typeof window.transitionToReceiver === 'function') {
-        window.transitionToReceiver(roomCodeText);
+      const isLocked = (typeof window._socketIsLocked === 'function') ? window._socketIsLocked() : false;
+      if (isLocked) {
+        if (roomCodeText && typeof window.transitionToReceiver === 'function') {
+          window.transitionToReceiver(roomCodeText);
+        }
+      } else {
+        if (roomCodeText && typeof window.transitionToSender === 'function') {
+          window.transitionToSender(roomCodeText);
+        }
       }
     } else {
       if (roomCodeText && typeof window.transitionToSender === 'function') {
@@ -3095,8 +3103,14 @@
   function dismissSuccess() {
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('gravity-well-ui').classList.remove('hidden');
-    // Gravity well does NOT restart here — particles drift freely
-    // Well will start again when the next file arrives via startReceive()
+    // Return to sender/idle workspace if room is unlocked
+    const isLocked = (typeof window._socketIsLocked === 'function') ? window._socketIsLocked() : false;
+    if (!isLocked) {
+      const roomCodeText = document.getElementById('room-code-display').textContent.replace('Room ', '').trim();
+      if (roomCodeText && typeof window.transitionToSender === 'function') {
+        window.transitionToSender(roomCodeText);
+      }
+    }
   }
 
   /* ── DOWNLOAD BUTTON ── (stub — real backend wires this) */

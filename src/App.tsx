@@ -1792,6 +1792,7 @@ export default function App() {
     // falling back to the role-picker UI. Exposing these ensures Ch2/Ch3 route
     // through the real socket instead of showing the dev role picker.
     (window as any)._socketIsConnected = () => !!socketRef.current?.connected;
+    (window as any)._socketIsLocked = () => isGlobalLockedRef.current;
 
     (window as any)._socketJoinRoom = (code: string) => {
       setRoomCode(code);
@@ -1915,6 +1916,7 @@ export default function App() {
       btnClearFiles?.removeEventListener('click', handleBtnClearFilesClick);
 
       delete (window as any)._socketIsConnected;
+      delete (window as any)._socketIsLocked;
       delete (window as any)._socketJoinRoom;
       delete (window as any)._socketCreateRoom;
       delete (window as any).onFilesSelected;
