@@ -3023,11 +3023,8 @@
     gwLoopActive = false; // reset guard
     startGravityWellIdle();
 
-    // Animate sphere coming in from left
-    animateIncomingSphere(() => {
-      // Sphere consumed — show receive progress ring
-      showReceiveProgress(filename, totalBytes);
-    });
+    // Sphere consumed — show receive progress ring
+    showReceiveProgress(filename, totalBytes);
   }
 
   function showReceiveProgress(filename, totalBytes) {

@@ -12,9 +12,9 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
   - **Files**: `src/App.tsx`
   - **Status**: Completed
 
-- [ ] **Task 3**: Remove Receiver Left Sweep Animation
+- [x] **Task 3**: Remove Receiver Left Sweep Animation
   - **Files**: `index.html`
-  - **Status**: Pending
+  - **Status**: Completed
 
 - [ ] **Task 4**: Clean WebRTC State Residuals on Connection Reset
   - **Files**: `src/App.tsx`
