@@ -79,7 +79,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Nexus Spatial</title>
   <!-- Ch7: Socket.IO wiring active -->
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -930,6 +930,10 @@
 
     /* Mobile: bottom sheet */
     @media (max-width: 767px) {
+      #top-bar {
+        padding-top: max(8px, env(safe-area-inset-top, 0px));
+        height: calc(60px + env(safe-area-inset-top, 0px));
+      }
       #files-panel {
         top: auto; left: 0; right: 0; bottom: 36px;
         width: 100%; height: 62vh;
@@ -944,7 +948,16 @@
       }
       #files-panel-toggle.visible { display: flex; }
       #home-screen {
-        padding: 20px 12px;
+        padding-top: calc(64px + env(safe-area-inset-top, 0px)) !important;
+        padding-bottom: 36px;
+        padding-left: 12px;
+        padding-right: 12px;
+      }
+      #sender-screen, #receiver-screen, #progress-screen, #receive-progress, #success-screen, #receive-success {
+        padding-top: calc(64px + env(safe-area-inset-top, 0px)) !important;
+        padding-left: 16px !important;
+        padding-right: 16px !important;
+        padding-bottom: 36px !important;
       }
       .card-inner {
         padding: 20px 16px 16px;
@@ -2053,6 +2066,7 @@
     explodeSphere(onDone){
       PS_state='drift'; sphereActive=false;
       PS_transferActive=false;
+      gravWell=null;
       ovCanvas.classList.remove('active');
       ovCtx.clearRect(0,0,ovCanvas.width,ovCanvas.height);
       // Burst outward from center
@@ -2623,15 +2637,13 @@
       }
     }
 
-    if (speedMbps > 0) {
-      const totalBytes = fileQueue.reduce((s,f)=>s+f.size,0) || (80*1048576);
-      const remaining = totalBytes * (1 - progress);
-      const etaSec = remaining / (speedMbps * 1048576);
-      const etaStr = etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's';
-      const statsEl = document.getElementById('progress-stats');
-      if (statsEl) {
-        statsEl.textContent = speedMbps.toFixed(1) + ' MB/s · ' + etaStr + ' remaining';
-      }
+    const totalBytes = fileQueue.reduce((s,f)=>s+f.size,0) || (80*1048576);
+    const remaining = totalBytes * (1 - progress);
+    const etaSec = speedMbps > 0 ? remaining / (speedMbps * 1048576) : 0;
+    const etaStr = speedMbps > 0 ? (etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's') : '—';
+    const statsEl = document.getElementById('progress-stats');
+    if (statsEl) {
+      statsEl.textContent = (speedMbps || 0).toFixed(1) + ' MB/s · ' + etaStr + (speedMbps > 0 ? ' remaining' : '');
     }
   };
 
@@ -2646,6 +2658,10 @@
     if (typeof window.stopGravityWellIdle === 'function') {
       window.stopGravityWellIdle();
     }
+    if (window.ParticleSystem) {
+      ParticleSystem.clearGravityWell();
+      ParticleSystem.releaseAll();
+    }
     // Hide progress screen first
     document.getElementById('progress-screen').classList.remove('visible');
     // Explode particles → they drift back naturally → show success
@@ -2655,8 +2671,6 @@
         fileQueue.length+' file'+(fileQueue.length>1?'s':'')+' sent \u00b7 '+fmt(total);
       document.getElementById('success-screen').classList.add('visible');
     });
-    // Also fully release after explode settles
-    setTimeout(()=>ParticleSystem.releaseAll(), 800);
   }
 
   /* ── CANCEL ── */
@@ -2768,6 +2782,14 @@
   document.getElementById('btn-leave').addEventListener('click', leaveRoom);
 
   window.resetSenderUI = function(){
+    fileQueue = [];
+    renderQueue();
+    const fileInput = document.getElementById('file-input');
+    if (fileInput) fileInput.value = '';
+    if (typeof window.onFilesSelected === 'function') {
+      window.onFilesSelected([]);
+    }
+
     const dz=document.getElementById('drop-zone');
     dz.classList.remove('fade-out'); dz.style.padding=''; dz.style.display='';
     const qw=document.getElementById('queue-wrap'); qw.style.opacity='1'; qw.classList.remove('visible');
@@ -3169,8 +3191,12 @@
 
   /* ── CH7 RECEIVER HOOKS — called by Ch7 real WebRTC wiring ── */
 
+  // Keep local rxMeta ref for updateReceiverProgress ETA calc
+  let rxMeta = null;
+
   /** Called when meta frame arrives: start incoming sphere + gravity well */
   window.triggerIncomingSphere = function(filename, totalBytes, batchIndex, batchCount) {
+    rxMeta = { name: filename, size: totalBytes };
     startReceive(filename, totalBytes, batchIndex, batchCount);
   };
 
@@ -3180,12 +3206,12 @@
     document.getElementById('receive-ring').style.strokeDashoffset =
       circumference * (1 - progress);
     document.getElementById('receive-pct').textContent = Math.floor(progress * 100);
-    if (speedMbps > 0 && rxMeta) {
+    if (rxMeta) {
       const remaining = rxMeta.size * (1 - progress);
-      const etaSec = remaining / (speedMbps * 1048576);
-      const etaStr = etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's';
+      const etaSec = speedMbps > 0 ? remaining / (speedMbps * 1048576) : 0;
+      const etaStr = speedMbps > 0 ? (etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's') : '—';
       document.getElementById('receive-stats').textContent =
-        speedMbps.toFixed(1) + ' MB/s · ' + etaStr + ' remaining';
+        (speedMbps || 0).toFixed(1) + ' MB/s · ' + etaStr + (speedMbps > 0 ? ' remaining' : '');
     }
   };
 
@@ -3201,14 +3227,6 @@
     }
     // Use existing completeReceive flow but with real data and batch metrics
     completeReceive(name, size, url, batchIndex, batchCount);
-  };
-
-  // Keep local rxMeta ref for updateReceiverProgress ETA calc
-  let rxMeta = null;
-  const _origStartReceive = startReceive;
-  startReceive = function(filename, totalBytes, batchIndex, batchCount) {
-    rxMeta = { name: filename, size: totalBytes };
-    _origStartReceive(filename, totalBytes, batchIndex, batchCount);
   };
 
   /* ── RECEIVER CANCEL CONFIRM ── */

@@ -35,6 +35,7 @@ export default function App() {
   const saveDirectoryHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const hasSaveDirectoryRef = useRef(false);
   const isChoosingDirectoryRef = useRef(false);
+  const directoryPickerDeclinedRef = useRef(false);
   const opfsFileHandleRef = useRef<any>(null);
   // Tracks the FileSystemFileHandle for the current FSA stream (showSaveFilePicker path)
   // so we can delete the partial file if the transfer is cancelled mid-way.
@@ -726,14 +727,48 @@ export default function App() {
         return;
       }
 
+      const fsaAvailable = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+      if (fsaAvailable && !saveDirectoryHandleRef.current && !directoryPickerDeclinedRef.current && !isGestureDropRef.current) {
+        try {
+          const dirHandle = await (window as any).showDirectoryPicker({
+            mode: 'readwrite',
+            startIn: 'downloads',
+          });
+          saveDirectoryHandleRef.current = dirHandle;
+          hasSaveDirectoryRef.current = true;
+
+          // Set up stream writer for the current incoming file:
+          if (incomingFileRef.current && transferEngineRef.current) {
+            const fh = await dirHandle.getFileHandle(incomingFileRef.current.name, { create: true });
+            const wr = await fh.createWritable();
+            if (incomingFileRef.current.size > 0) {
+              await wr.truncate(incomingFileRef.current.size);
+            }
+            if ((transferEngineRef.current as any).streamWriter) {
+              await (transferEngineRef.current as any).streamWriter.close().catch(() => {});
+            }
+            transferEngineRef.current.setStreamWriter(wr);
+            opfsFileHandleRef.current = null; // clear OPFS fallback
+            console.log(`[Stream] Set stream writer to chosen directory for file: ${incomingFileRef.current.name}`);
+          }
+        } catch (err: any) {
+          if (err?.name === 'AbortError') {
+            console.warn("User cancelled directory picker");
+            directoryPickerDeclinedRef.current = true;
+          } else {
+            console.error("Directory picker error:", err);
+          }
+        }
+      }
+
       if (!saveDirectoryHandleRef.current && typeof (window as any).showSaveFilePicker !== 'undefined' && !isGestureDropRef.current) {
         try {
           const handle = await (window as any).showSaveFilePicker({
-            suggestedName: incomingFileRef.current.name,
+            suggestedName: incomingFileRef.current!.name,
           });
           const writable = await handle.createWritable();
-          if (incomingFileRef.current.size > 0) {
-            await (writable as any).truncate(incomingFileRef.current.size);
+          if (incomingFileRef.current!.size > 0) {
+            await (writable as any).truncate(incomingFileRef.current!.size);
           }
           if (transferEngineRef.current) {
             if ((transferEngineRef.current as any).streamWriter) {
@@ -811,6 +846,10 @@ export default function App() {
       const nameToDelete = incomingFileRef.current.name;
       saveDirectoryHandleRef.current.removeEntry(nameToDelete).catch(() => {});
     }
+    saveDirectoryHandleRef.current = null;
+    hasSaveDirectoryRef.current = false;
+    isChoosingDirectoryRef.current = false;
+    directoryPickerDeclinedRef.current = false;
 
     // Path 3 — OPFS (gesture drop / mobile)
     if (opfsFileHandleRef.current) {
@@ -1038,6 +1077,10 @@ export default function App() {
     isSourceRef.current = false;
     setIsGlobalLocked(false);
     isGlobalLockedRef.current = false;
+    saveDirectoryHandleRef.current = null;
+    hasSaveDirectoryRef.current = false;
+    isChoosingDirectoryRef.current = false;
+    directoryPickerDeclinedRef.current = false;
     setIncomingFile(null);
     incomingFileRef.current = null;
     setIsGrabbedPermanent(false);
@@ -1534,6 +1577,10 @@ export default function App() {
             console.log("CONSOLE: Received ALL_FILES_DONE from peer");
             setMessages((prev) => [...prev, `SYSTEM: All files have been received.`]);
             transferRequestedRef.current = false;
+            saveDirectoryHandleRef.current = null;
+            hasSaveDirectoryRef.current = false;
+            isChoosingDirectoryRef.current = false;
+            directoryPickerDeclinedRef.current = false;
 
           } else if (payload.type === "PING") {
             dc.send(JSON.stringify({ type: "PONG" }));
