@@ -2257,6 +2257,11 @@
       if(e.key==='Backspace'){if(digits_state[i]!==''){setDigit(i,'');dimGlobe(i);}else if(i>0){boxes[i-1].focus();setDigit(i-1,'');dimGlobe(i-1);}e.preventDefault();}
       else if(e.key==='ArrowLeft'&&i>0)boxes[i-1].focus();
       else if(e.key==='ArrowRight'&&i<3)boxes[i+1].focus();
+      else if(/^[0-9]$/.test(e.key)){
+        e.preventDefault();
+        setDigit(i,e.key);triggerGlobe(i);updateQR();
+        if(i<3)boxes[i+1].focus();
+      }
     });
     box.addEventListener('input',()=>{
       clearError();const raw=box.value.replace(/\D/g,'');
