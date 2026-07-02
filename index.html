@@ -2259,23 +2259,25 @@
         if(digits_state[i]!==''){
           setDigit(i,'');dimGlobe(i);updateQR();
         }else if(i>0){
-          boxes[i-1].focus();boxes[i-1].select();
           setDigit(i-1,'');dimGlobe(i-1);updateQR();
+          setTimeout(()=>{ if(boxes[i-1]){ boxes[i-1].focus(); boxes[i-1].select(); } },10);
         }
       }
       else if(e.key==='Delete'){
         e.preventDefault();
         setDigit(i,'');dimGlobe(i);updateQR();
       }
-      else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();boxes[i-1].focus();boxes[i-1].select();}
-      else if(e.key==='ArrowRight'&&i<3){e.preventDefault();boxes[i+1].focus();boxes[i+1].select();}
+      else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();setTimeout(()=>{ boxes[i-1].focus(); boxes[i-1].select(); },10);}
+      else if(e.key==='ArrowRight'&&i<3){e.preventDefault();setTimeout(()=>{ boxes[i+1].focus(); boxes[i+1].select(); },10);}
     });
     box.addEventListener('input',()=>{
       clearError();const raw=box.value.replace(/\D/g,'');
       if(raw.length>0){
         const ch=raw[raw.length-1];
         setDigit(i,ch);triggerGlobe(i);updateQR();
-        if(i<3){boxes[i+1].focus();boxes[i+1].select();}
+        if(i<3){
+          setTimeout(()=>{ if(boxes[i+1]){ boxes[i+1].focus(); boxes[i+1].select(); } },10);
+        }
       }else{
         setDigit(i,'');dimGlobe(i);updateQR();
       }

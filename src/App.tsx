@@ -1557,6 +1557,11 @@ export default function App() {
                 }));
               });
             } else {
+              // Call success screen trigger in Ch3 before clearing state
+              if (typeof (window as any)._completeTransferCh3 === 'function') {
+                (window as any)._completeTransferCh3();
+              }
+
               setMessages((prev) => [...prev, `SYSTEM: All ${selectedFilesRef.current.length} file(s) sent successfully!`]);
               setSelectedFiles([]);
               selectedFilesRef.current = [];
@@ -1570,11 +1575,6 @@ export default function App() {
               if (socketRef.current) {
                 console.log("CONSOLE: All files sent. Emitting 'dropped' to unlock room.");
                 socketRef.current.emit("dropped", roomCodeRef.current);
-              }
-
-              // Call success screen trigger in Ch3
-              if (typeof (window as any)._completeTransferCh3 === 'function') {
-                (window as any)._completeTransferCh3();
               }
             }
 
@@ -1796,7 +1796,7 @@ export default function App() {
         controlPanel.classList.add('visible');
         (btnGrab as HTMLButtonElement).style.display = 'none';
         (btnDrop as HTMLButtonElement).style.display = 'flex';
-        (btnDrop as HTMLButtonElement).disabled = !incomingFile;
+        (btnDrop as HTMLButtonElement).disabled = false;
       }
     } else {
       // Room is not locked.
