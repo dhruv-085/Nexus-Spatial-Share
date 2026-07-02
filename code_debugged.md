@@ -227,5 +227,9 @@ This file documents all bugs fixed in this project. **All future agent sessions 
   2. Injected `kick()` call at the end of Chapter 2 IIFE to start the 3D globe animation loop immediately on page load.
   3. Changed readiness check in `joinRoom()` and `btn-create` to `document.readyState === 'loading'`, allowing instant joining as soon as DOM scripts parse and React binds socket handlers.
 
+---
 
-
+## 30. HTML Script Tag Parsing Failure (TypeScript Cast Syntax Error)
+* **Symptom**: Page load failed to initialize any UI or script features — the signaling status pill remained grey/off, Toast notifications didn't pop, Join/Create buttons didn't respond, 3D globe was invisible, and OTP digit auto-advance did not function.
+* **Root Cause**: A TypeScript type assertion (`(window as any)`) was accidentally included in a plain JavaScript `<script>` tag in `index.html` during mobile background audio event setup (line 2568), throwing a fatal `Uncaught SyntaxError: Unexpected identifier 'as'` at browser parse time that halted execution of all subsequent scripts.
+* **Fix**: Replaced `(window as any)` with plain JavaScript `window` in `index.html`. Verified all script tags parse without errors using Node JS syntax checks.
