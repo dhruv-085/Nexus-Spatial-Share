@@ -3091,6 +3091,10 @@
     document.getElementById('receive-filename').textContent = filename;
     document.getElementById('receive-stats').textContent = '— Receiving…';
     
+    // Reset SVG ring to 0% so it never starts partially filled from a previous transfer
+    document.getElementById('receive-ring').style.strokeDashoffset = 502;
+    document.getElementById('receive-pct').textContent = '0';
+
     const idx = (typeof batchIndex === 'number') ? batchIndex : 0;
     const count = (typeof batchCount === 'number') ? batchCount : 1;
     const labelEl = document.querySelector('#receive-progress .receive-label');
@@ -3098,70 +3102,78 @@
       labelEl.textContent = count > 1 ? `Receiving (File ${idx + 1} of ${count})...` : 'Receiving...';
     }
 
+    // Belt-and-suspenders: ensure gravity well UI is hidden when progress shows
+    document.getElementById('gravity-well-ui').classList.add('hidden');
+
     document.getElementById('receive-progress').classList.add('visible');
   }
 
   function completeReceive(filename, totalBytes, url, batchIndex = 0, batchCount = 1) {
-    if (rxRafId) cancelAnimationFrame(rxRafId);
-    document.getElementById('receive-progress').classList.remove('visible');
-    if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
+    try {
+      if (rxRafId) cancelAnimationFrame(rxRafId);
+      document.getElementById('receive-progress').classList.remove('visible');
+      if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
 
-    const isLast = (batchIndex + 1) >= batchCount;
+      const isLast = (batchIndex + 1) >= batchCount;
 
-    const finalize = () => {
-      // Add to files list
-      const fileEntry = {
-        name: filename,
-        size: totalBytes,
-        icon: getFileIcon(filename),
-        timestamp: Date.now(),
-        url: url || null,
+      const finalize = () => {
+        // Add to files list
+        const fileEntry = {
+          name: filename,
+          size: totalBytes,
+          icon: getFileIcon(filename),
+          timestamp: Date.now(),
+          url: url || null,
+        };
+        rxFiles.push(fileEntry);
+        renderFilesPanel();
+        updatePanelToggle();
+
+        if (isLast) {
+          // Show success state
+          document.getElementById('receive-success-filename').textContent = filename + ' · ' + fmt(totalBytes);
+          document.getElementById('receive-success').classList.add('visible');
+          Toast.show('File received: ' + filename, 'success');
+
+          // Warn user to download manually from files panel if not auto-downloaded
+          setTimeout(() => {
+            Toast.show('Download files from files section if not downloaded automatically', 'info');
+          }, 1200);
+
+          // After 6s, reset gravity well for next transfer
+          setTimeout(() => {
+            if (document.getElementById('receive-success').classList.contains('visible')) {
+              // Auto-dismiss success, reform gravity well
+              dismissSuccess();
+            }
+          }, 6000);
+        } else {
+          // Multi-file transfer: do NOT show success screen yet. Keep waiting for the next file
+          Toast.show(`Received ${batchIndex + 1} of ${batchCount}: ${filename}`, 'success');
+          
+          // Hide success screen if visible (just in case)
+          document.getElementById('receive-success').classList.remove('visible');
+          
+          // Re-enable gravity well UI and keep it ready for next file
+          document.getElementById('gravity-well-ui').classList.remove('hidden');
+        }
       };
-      rxFiles.push(fileEntry);
-      renderFilesPanel();
-      updatePanelToggle();
 
       if (isLast) {
-        // Show success state
-        document.getElementById('receive-success-filename').textContent = filename + ' · ' + fmt(totalBytes);
-        document.getElementById('receive-success').classList.add('visible');
-        Toast.show('File received: ' + filename, 'success');
-
-        // Warn user to download manually from files panel if not auto-downloaded
-        setTimeout(() => {
-          Toast.show('Download files from files section if not downloaded automatically', 'info');
-        }, 1200);
-
-        // After 6s, reset gravity well for next transfer
-        setTimeout(() => {
-          if (document.getElementById('receive-success').classList.contains('visible')) {
-            // Auto-dismiss success, reform gravity well
-            dismissSuccess();
-          }
-        }, 6000);
+        // Play 3 ripple rings then show success
+        playRipple(finalize);
       } else {
-        // Multi-file transfer: do NOT show success screen yet. Keep waiting for the next file
-        Toast.show(`Received ${batchIndex + 1} of ${batchCount}: ${filename}`, 'success');
-        
-        // Hide success screen if visible (just in case)
-        document.getElementById('receive-success').classList.remove('visible');
-        
-        // Re-enable gravity well UI and keep it ready for next file
-        document.getElementById('gravity-well-ui').classList.remove('hidden');
+        // No blocking ripple animation, finalize immediately so we don't block the next file's progress UI!
+        finalize();
       }
-    };
-
-    if (isLast) {
-      // Play 3 ripple rings then show success
-      playRipple(finalize);
-    } else {
-      // No blocking ripple animation, finalize immediately so we don't block the next file's progress UI!
-      finalize();
-    }
-
-    rxTransferActive = false;
-    if (typeof window.stopGravityWellIdle === 'function') {
-      window.stopGravityWellIdle();
+    } catch (err) {
+      console.error('[completeReceive] Error during completion:', err);
+    } finally {
+      // ALWAYS reset rxTransferActive so subsequent transfers are never blocked
+      rxTransferActive = false;
+      if (typeof window.stopGravityWellIdle === 'function') {
+        window.stopGravityWellIdle();
+      }
     }
   }
 
@@ -3205,6 +3217,8 @@
   /** Called when meta frame arrives: start incoming sphere + gravity well */
   window.triggerIncomingSphere = function(filename, totalBytes, batchIndex, batchCount) {
     rxMeta = { name: filename, size: totalBytes };
+    // Safety reset: ensure stale rxTransferActive never blocks a valid new transfer
+    rxTransferActive = false;
     startReceive(filename, totalBytes, batchIndex, batchCount);
   };
 
