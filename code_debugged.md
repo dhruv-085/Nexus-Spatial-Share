@@ -214,4 +214,18 @@ This file documents all bugs fixed in this project. **All future agent sessions 
   3. Added `visibilitychange` listener in `App.tsx` to detect resume, force socket reconnection, re-emit `join-room`, and re-acquire screen WakeLock.
   4. Added informative mobile toast guiding users to keep the app in foreground during active transfers.
 
+---
+
+## 29. OTP Auto-Advance, Globe Render on Load & Join Button Response
+* **Symptom**: Typing digits into OTP boxes failed to auto-advance to subsequent boxes, network globe was invisible on page load, and Join Room button showed loading message indefinitely.
+* **Root Cause**: 
+  1. Intercepting `keydown` for `0-9` with `preventDefault()` blocked native character input and native `input` event dispatching, breaking soft/virtual keyboards and focus transitions.
+  2. `drawGlobe()` animation loop was never kicked off on initial page load until an OTP node was explicitly activated.
+  3. `joinRoom()` checked `document.readyState !== 'complete'`, which blocked room joining if background resources (fonts/images) were still loading even though DOM and React socket handlers were ready.
+* **Fix**: 
+  1. Restored native `input` event handling for OTP digit entry (extracting latest digit), using `keydown` strictly for `Backspace`/`Delete`/`Arrow` navigation.
+  2. Injected `kick()` call at the end of Chapter 2 IIFE to start the 3D globe animation loop immediately on page load.
+  3. Changed readiness check in `joinRoom()` and `btn-create` to `document.readyState === 'loading'`, allowing instant joining as soon as DOM scripts parse and React binds socket handlers.
+
+
 

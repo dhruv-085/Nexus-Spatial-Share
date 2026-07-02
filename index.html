@@ -2254,19 +2254,31 @@
   boxes.forEach((box,i)=>{
     box.addEventListener('keydown',e=>{
       clearError();
-      if(e.key==='Backspace'){if(digits_state[i]!==''){setDigit(i,'');dimGlobe(i);}else if(i>0){boxes[i-1].focus();setDigit(i-1,'');dimGlobe(i-1);}e.preventDefault();}
-      else if(e.key==='ArrowLeft'&&i>0)boxes[i-1].focus();
-      else if(e.key==='ArrowRight'&&i<3)boxes[i+1].focus();
-      else if(/^[0-9]$/.test(e.key)){
+      if(e.key==='Backspace'){
         e.preventDefault();
-        setDigit(i,e.key);triggerGlobe(i);updateQR();
-        if(i<3)boxes[i+1].focus();
+        if(digits_state[i]!==''){
+          setDigit(i,'');dimGlobe(i);updateQR();
+        }else if(i>0){
+          boxes[i-1].focus();boxes[i-1].select();
+          setDigit(i-1,'');dimGlobe(i-1);updateQR();
+        }
       }
+      else if(e.key==='Delete'){
+        e.preventDefault();
+        setDigit(i,'');dimGlobe(i);updateQR();
+      }
+      else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();boxes[i-1].focus();boxes[i-1].select();}
+      else if(e.key==='ArrowRight'&&i<3){e.preventDefault();boxes[i+1].focus();boxes[i+1].select();}
     });
     box.addEventListener('input',()=>{
       clearError();const raw=box.value.replace(/\D/g,'');
-      if(raw.length>0){const ch=raw[raw.length-1];setDigit(i,ch);triggerGlobe(i);updateQR();if(i<3)boxes[i+1].focus();}
-      else box.value=digits_state[i];
+      if(raw.length>0){
+        const ch=raw[raw.length-1];
+        setDigit(i,ch);triggerGlobe(i);updateQR();
+        if(i<3){boxes[i+1].focus();boxes[i+1].select();}
+      }else{
+        setDigit(i,'');dimGlobe(i);updateQR();
+      }
     });
     box.addEventListener('paste',e=>{
       e.preventDefault();clearError();
@@ -2277,6 +2289,8 @@
     });
     box.addEventListener('focus',()=>box.select());
   });
+  // Render globe immediately on startup
+  kick();
   setTimeout(()=>boxes[0].focus(),300);
 
   /* QR */
@@ -2317,7 +2331,7 @@
 
   /* JOIN / CREATE */
   function joinRoom(){
-    if (document.readyState !== 'complete' || typeof window._socketJoinRoom !== 'function') {
+    if (document.readyState === 'loading' || typeof window._socketJoinRoom !== 'function') {
       document.getElementById('join-error').textContent = 'Please wait, the website is still loading...';
       return;
     }
@@ -2421,7 +2435,7 @@
   };
   document.getElementById('btn-join').addEventListener('click',joinRoom);
   document.getElementById('btn-create').addEventListener('click',()=>{
-    if (document.readyState !== 'complete' || typeof window._socketCreateRoom !== 'function') {
+    if (document.readyState === 'loading' || typeof window._socketCreateRoom !== 'function') {
       document.getElementById('join-error').textContent = 'Please wait, the website is still loading...';
       return;
     }
