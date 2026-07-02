@@ -2658,19 +2658,22 @@
 
 
   function completeTransfer() {
-    if(transferRafId) cancelAnimationFrame(transferRafId);
+    if(transferRafId) { cancelAnimationFrame(transferRafId); transferRafId = null; }
     isTransferring = false; sphereFormed = false;
     if (typeof window.stopGravityWellIdle === 'function') {
       window.stopGravityWellIdle();
     }
     if (window.ParticleSystem) {
       ParticleSystem.clearGravityWell();
-      ParticleSystem.releaseAll();
+      // NOTE: Do NOT call releaseAll() here — particles must stay at sphere
+      // positions so explodeSphere() can burst them outward. releaseAll()
+      // is called inside the explodeSphere callback after the burst.
     }
     // Hide progress screen first
     document.getElementById('progress-screen').classList.remove('visible');
-    // Explode particles → they drift back naturally → show success
+    // Explode particles from sphere positions → release after burst → show success
     ParticleSystem.explodeSphere(() => {
+      if (window.ParticleSystem) { ParticleSystem.releaseAll(); }
       const total=fileQueue.reduce((s,f)=>s+f.size,0);
       document.getElementById('success-meta').textContent=
         fileQueue.length+' file'+(fileQueue.length>1?'s':'')+' sent \u00b7 '+fmt(total);
