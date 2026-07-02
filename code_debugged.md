@@ -141,3 +141,77 @@ This file documents all bugs fixed in this project. **All future agent sessions 
 * **Fix**: Checked `document.readyState` and socket helper bindings at the start of click handlers, blocking actions with a loading notice if the system is still initializing.
 
 ---
+
+## 19. Sender Stuck in Animation Loop on Completion
+* **Symptom**: After a complete file transfer, the sender stays in the repelling animation loop, whereas cancelling stops it correctly.
+* **Root Cause**: `completeTransfer()` did not immediately release particle system states or clear the gravity well. Furthermore, `explodeSphere` did not clear the gravity well.
+* **Fix**: Reset `gravWell = null` immediately inside `explodeSphere`, and called `ParticleSystem.clearGravityWell()` and `releaseAll()` immediately in `completeTransfer()`.
+
+---
+
+## 20. Missing Speed/ETA Metrics on Receiver Progress Screen
+* **Symptom**: Receiver progress panel shows no Speed or ETA metrics during chunks transfer, displaying only '— Receiving…'.
+* **Root Cause**: The speed metric was only updated if `speedMbps > 0`. Because the telemetry calculation ticks once every 1 second, short transfers (or the first second of a long transfer) had `speedMbps = 0` which resulted in blank telemetry values. Also, the `rxMeta` object was bound late through a runtime wrapper override.
+* **Fix**: Declared and assigned `rxMeta` directly inside `triggerIncomingSphere`, and updated `updateReceiverProgress` to gracefully default to `0.0 MB/s · —` when speed is not yet positive, keeping metrics visible.
+
+---
+
+## 21. Stale File Selection in Sender Queue
+* **Symptom**: When a previous transfer completes and the user attempts to select and send a new file, the old files from the previous batch still appear selected by default.
+* **Root Cause**: `fileQueue` in `index.html` was not cleared when the transfer completed or when the sender UI reset.
+* **Fix**: Cleared `fileQueue = []`, reset the file input element, and triggered `onFilesSelected([])` to sync React state inside `resetSenderUI()`.
+
+---
+
+## 22. Multiple File Location Dialogs on Desktop Receiver
+* **Symptom**: When receiving a batch of files on a desktop browser, the browser file save location dialog pops up for every single file in the batch.
+* **Root Cause**: When the receiver clicked "Drop", `handleDropAction()` used `showSaveFilePicker` for the first file, leaving `saveDirectoryHandleRef` null. As subsequent files in the batch arrived, they fallback to browser download triggers, prompting the user for each file if the browser settings are configured to ask.
+* **Fix**: Preferred `showDirectoryPicker()` in `handleDropAction()` so the user selects a target directory once for the entire batch. Integrated `directoryPickerDeclinedRef` to skip prompts and download all files automatically if they cancel the picker.
+
+---
+
+## 23. Chopped Logo on Mobile Viewports (Notch Overlaps)
+* **Symptom**: On mobile phone viewports, the top logo icon and text are cropped or chopped from above.
+* **Root Cause**: The viewport metadata did not support `viewport-fit=cover`, resulting in `env(safe-area-inset-top)` evaluating to `0px`. Also, spacing constraints on mobile squished the top-bar height.
+* **Fix**: Added `viewport-fit=cover` to the viewport `<meta>` tag, and configured the mobile media queries to increase `#top-bar` height and shift screen layouts down safely.
+
+---
+
+## 24. OTP Room Code Focus Stale State After Clear & Retype
+* **Symptom**: Clearing all 4 room code boxes via Backspace and retyping caused cursor auto-advance to fail on subsequent boxes.
+* **Root Cause**: Reliance on browser native `input` events when input selection state was reset mid-clear.
+* **Fix**: Intercepted numeric keys `[0-9]` directly in the `keydown` event listener, calling `preventDefault()`, updating state synchronously, and explicitly calling `.focus()` on the next input box.
+
+---
+
+## 25. Sender Particle Animation Stuck After Successful Transfer
+* **Symptom**: After a successful transfer, the sender's particle animation remained stuck at sphere positions.
+* **Root Cause**: `completeTransfer()` called `releaseAll()` BEFORE `explodeSphere()`, clearing particle sphere targets so the explosion had no source positions to burst from.
+* **Fix**: Reordered `completeTransfer()` to cancel RAF, stop gravity well idle, clear attractor, hide progress UI, burst particles via `explodeSphere()`, and only call `releaseAll()` inside the explosion completion callback.
+
+---
+
+## 26. Receiver Progress Ring Not Displaying on Subsequent Transfers
+* **Symptom**: Receiver progress ring stopped appearing after prior successful or cancelled transfers, and occasionally overlapped with the gravity well UI.
+* **Root Cause**: `rxTransferActive` was not reset if previous completion handlers encountered errors or unhandled edge cases, causing `startReceive` guard `if (rxTransferActive) return;` to block future progress rings. Also, SVG `strokeDashoffset` was not reset to 502 at the start of new transfers.
+* **Fix**: Explicitly reset `rxTransferActive = false` inside `triggerIncomingSphere()`, reset SVG `strokeDashoffset` to 502 and percent text to 0 in `showReceiveProgress()`, explicitly hid `gravity-well-ui`, and wrapped `completeReceive()` in `try/catch/finally`.
+
+---
+
+## 27. Unified Batch File Download Prompt Strategy
+* **Symptom**: Desktop receivers were prompted for file save locations per-file during batch transfers, or pickers were bypassable causing duplicate prompts.
+* **Root Cause**: Dual-method handling between button drop and gesture drop created separate picker paths (`showSaveFilePicker` vs OPFS), causing per-file prompts.
+* **Fix**: Removed per-file pickers entirely. `saveFileAsync()` prompts `showDirectoryPicker()` **ONCE** for the first received file. All subsequent files in the batch automatically save to that handle or fall back to silent browser auto-downloads via an `<a>` element.
+
+---
+
+## 28. Mobile Background/Minimize Disconnect Mitigation
+* **Symptom**: On mobile devices, taking time in the file picker caused server disconnects, and backgrounding/minimizing the browser interrupted active transfers.
+* **Root Cause**: Aggressive mobile OS webview background suspension froze Socket.IO keepalives and WebRTC channels.
+* **Fix**: 
+  1. Triggered silent background audio on file-input click (before file selection).
+  2. Tuned Socket.IO keepalive timeouts (`pingTimeout: 120000`, `pingInterval: 15000` on server; `reconnectionDelay`, `timeout` on client).
+  3. Added `visibilitychange` listener in `App.tsx` to detect resume, force socket reconnection, re-emit `join-room`, and re-acquire screen WakeLock.
+  4. Added informative mobile toast guiding users to keep the app in foreground during active transfers.
+
+
