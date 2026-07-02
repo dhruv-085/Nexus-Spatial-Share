@@ -28,7 +28,9 @@ async function startServer() {
     cors: {
       origin: "*",
       methods: ["GET", "POST"]
-    }
+    },
+    pingTimeout: 120000, // 2 minutes before considering socket dead
+    pingInterval: 15000  // ping every 15s
   });
 
   const PORT = 3000;

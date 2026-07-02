@@ -87,13 +87,34 @@ export default function App() {
     clientIdRef.current = id;
   }
 
+  const startBackgroundAudio = useCallback(async () => {
+    if (backgroundAudioRef.current) {
+      try {
+        await backgroundAudioRef.current.play();
+        console.log("[BackgroundMode] Silent audio playing, connection will stay alive in background.");
+        if ('mediaSession' in navigator) {
+          (navigator as any).mediaSession.metadata = new MediaMetadata({
+            title: 'Nexus Spatial Share',
+            artist: 'Background Connection Active',
+          });
+        }
+      } catch (e) {
+        console.warn("[BackgroundMode] Could not play silent audio:", e);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (typeof Audio !== 'undefined') {
       const a = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
       a.loop = true;
       backgroundAudioRef.current = a;
     }
-  }, []);
+    (window as any).startBackgroundAudio = startBackgroundAudio;
+    return () => {
+      delete (window as any).startBackgroundAudio;
+    };
+  }, [startBackgroundAudio]);
 
   useEffect(() => { roomCodeRef.current = roomCode; }, [roomCode]);
   useEffect(() => { joinedRef.current = joined; }, [joined]);
@@ -157,11 +178,61 @@ export default function App() {
     }
   }, []);
 
+  const lastHiddenTimeRef = useRef<number>(0);
+
+  // Mobile resilience: visibility change handling to recover from backgrounding
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        lastHiddenTimeRef.current = Date.now();
+        console.log('[Visibility] App went to background');
+      } else if (document.visibilityState === 'visible') {
+        const bgDuration = lastHiddenTimeRef.current > 0 ? Date.now() - lastHiddenTimeRef.current : 0;
+        console.log(`[Visibility] App returned from background after ${Math.round(bgDuration / 1000)}s`);
+        lastHiddenTimeRef.current = 0;
+
+        if (socketRef.current && !socketRef.current.connected) {
+          console.log('[Visibility] Socket disconnected while in background — reconnecting...');
+          socketRef.current.connect();
+        } else if (socketRef.current && socketRef.current.connected && roomCodeRef.current.length === 4) {
+          socketRef.current.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
+        }
+
+        warmUpMediaPipe();
+
+        if (isTransferringRef.current && bgDuration > 25000) {
+          (window as any).Toast?.show?.('App was backgrounded. Resume transfer or re-send if paused.', 'warning');
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [warmUpMediaPipe]);
+
+  // Mobile warning toast when transfer starts
+  useEffect(() => {
+    if (isTransferring) {
+      const isMobile = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && window.innerWidth < 768;
+      if (isMobile) {
+        (window as any).Toast?.show?.('Keep app in foreground during transfer for best results.', 'info');
+      }
+    }
+  }, [isTransferring]);
+
   useEffect(() => {
     const SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
       ? `${window.location.protocol}//${window.location.hostname}:3000`
       : `${window.location.protocol}//${window.location.host}`;
-    const socket = io(SERVER_URL);
+    const socket = io(SERVER_URL, {
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 3000,
+      timeout: 30000,
+    });
     socketRef.current = socket;
 
     const hands = new Hands({

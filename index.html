@@ -2551,6 +2551,7 @@
   };
 
   const fileInput=document.getElementById('file-input');
+  fileInput.addEventListener('click', () => { if (typeof (window as any).startBackgroundAudio === 'function') (window as any).startBackgroundAudio(); });
   fileInput.addEventListener('change',()=>{if(fileInput.files.length){addFiles(fileInput.files);fileInput.value='';}});
   const dropZone=document.getElementById('drop-zone');
   dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
