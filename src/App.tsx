@@ -69,6 +69,7 @@ export default function App() {
   const currentFileIndexRef = useRef(0);
   const isTransferringRef = useRef(false);
   const transferRequestedRef = useRef(false);
+  const pendingDropActionRef = useRef(false);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const backgroundAudioRef = useRef<HTMLAudioElement | null>(null);
   // Watchdog: if ICE stays in 'checking' for 10s without connecting, force a rejoin
@@ -782,6 +783,7 @@ export default function App() {
       if (!incomingFileRef.current) {
         if (openCtrl.length > 0) {
           console.log("CONSOLE: Drop clicked but FILE_META missing — sending REQUEST_FILE_META to sender");
+          pendingDropActionRef.current = true;
           openCtrl.forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
           setMessages(prev => [...prev, "SYSTEM: Requesting file info from sender..."]);
         } else {
@@ -1418,6 +1420,14 @@ export default function App() {
                 payload.file.batchIndex,
                 payload.file.batchCount
               );
+            }
+
+            if (pendingDropActionRef.current || (isGlobalLockedRef.current && !isSourceRef.current && !transferRequestedRef.current)) {
+              console.log("CONSOLE: FILE_META received on receiver — auto-initiating drop action!");
+              pendingDropActionRef.current = false;
+              setTimeout(() => {
+                handleDropAction();
+              }, 50);
             }
 
             // Save location is chosen in handleDropAction (button) or falls through to

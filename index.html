@@ -2258,7 +2258,6 @@
         e.preventDefault();
         if(digits_state[i]!==''){
           setDigit(i,'');dimGlobe(i);updateQR();
-          if(i>0){ boxes[i-1].focus(); boxes[i-1].select(); }
         }else if(i>0){
           setDigit(i-1,'');dimGlobe(i-1);updateQR();
           boxes[i-1].focus(); boxes[i-1].select();
