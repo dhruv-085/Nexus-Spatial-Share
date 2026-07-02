@@ -1549,10 +1549,10 @@
       <div class="hero-heading"><span>Transfer files<br>through space.</span></div>
       <div class="hero-sub">Enter a room code or generate one to begin a spatial transfer.</div>
       <div class="otp-row">
-        <input class="otp-box" id="otp-0" maxlength="1" inputmode="numeric" autocomplete="off" />
-        <input class="otp-box" id="otp-1" maxlength="1" inputmode="numeric" autocomplete="off" />
-        <input class="otp-box" id="otp-2" maxlength="1" inputmode="numeric" autocomplete="off" />
-        <input class="otp-box" id="otp-3" maxlength="1" inputmode="numeric" autocomplete="off" />
+        <input class="otp-box" id="otp-0" maxlength="2" inputmode="numeric" autocomplete="off" />
+        <input class="otp-box" id="otp-1" maxlength="2" inputmode="numeric" autocomplete="off" />
+        <input class="otp-box" id="otp-2" maxlength="2" inputmode="numeric" autocomplete="off" />
+        <input class="otp-box" id="otp-3" maxlength="2" inputmode="numeric" autocomplete="off" />
       </div>
       <div class="globe-wrap">
         <canvas id="globe-canvas" width="388" height="120"></canvas>
@@ -2258,17 +2258,18 @@
         e.preventDefault();
         if(digits_state[i]!==''){
           setDigit(i,'');dimGlobe(i);updateQR();
+          if(i>0){ boxes[i-1].focus(); boxes[i-1].select(); }
         }else if(i>0){
           setDigit(i-1,'');dimGlobe(i-1);updateQR();
-          setTimeout(()=>{ if(boxes[i-1]){ boxes[i-1].focus(); boxes[i-1].select(); } },10);
+          boxes[i-1].focus(); boxes[i-1].select();
         }
       }
       else if(e.key==='Delete'){
         e.preventDefault();
         setDigit(i,'');dimGlobe(i);updateQR();
       }
-      else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();setTimeout(()=>{ boxes[i-1].focus(); boxes[i-1].select(); },10);}
-      else if(e.key==='ArrowRight'&&i<3){e.preventDefault();setTimeout(()=>{ boxes[i+1].focus(); boxes[i+1].select(); },10);}
+      else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();boxes[i-1].focus();boxes[i-1].select();}
+      else if(e.key==='ArrowRight'&&i<3){e.preventDefault();boxes[i+1].focus();boxes[i+1].select();}
     });
     box.addEventListener('input',()=>{
       clearError();const raw=box.value.replace(/\D/g,'');
@@ -2276,7 +2277,7 @@
         const ch=raw[raw.length-1];
         setDigit(i,ch);triggerGlobe(i);updateQR();
         if(i<3){
-          setTimeout(()=>{ if(boxes[i+1]){ boxes[i+1].focus(); boxes[i+1].select(); } },10);
+          boxes[i+1].focus(); boxes[i+1].select();
         }
       }else{
         setDigit(i,'');dimGlobe(i);updateQR();
@@ -2682,20 +2683,30 @@
     }
     if (window.ParticleSystem) {
       ParticleSystem.clearGravityWell();
-      // NOTE: Do NOT call releaseAll() here — particles must stay at sphere
-      // positions so explodeSphere() can burst them outward. releaseAll()
-      // is called inside the explodeSphere callback after the burst.
     }
     // Hide progress screen first
-    document.getElementById('progress-screen').classList.remove('visible');
-    // Explode particles from sphere positions → release after burst → show success
-    ParticleSystem.explodeSphere(() => {
+    const ps = document.getElementById('progress-screen');
+    if (ps) ps.classList.remove('visible');
+    const dz = document.getElementById('drop-zone');
+    if (dz) dz.classList.add('fade-out');
+
+    const finishSuccess = () => {
       if (window.ParticleSystem) { ParticleSystem.releaseAll(); }
-      const total=fileQueue.reduce((s,f)=>s+f.size,0);
-      document.getElementById('success-meta').textContent=
-        fileQueue.length+' file'+(fileQueue.length>1?'s':'')+' sent \u00b7 '+fmt(total);
-      document.getElementById('success-screen').classList.add('visible');
-    });
+      const count = fileQueue.length || 1;
+      const total = fileQueue.reduce((s,f)=>s+(f.size||0),0);
+      const metaEl = document.getElementById('success-meta');
+      if (metaEl) {
+        metaEl.textContent = count+' file'+(count>1?'s':'')+' sent'+(total > 0 ? ' \u00b7 '+fmt(total) : '');
+      }
+      const ss = document.getElementById('success-screen');
+      if (ss) ss.classList.add('visible');
+    };
+
+    if (window.ParticleSystem && typeof window.ParticleSystem.explodeSphere === 'function') {
+      ParticleSystem.explodeSphere(finishSuccess);
+    } else {
+      finishSuccess();
+    }
   }
 
   /* ── CANCEL ── */

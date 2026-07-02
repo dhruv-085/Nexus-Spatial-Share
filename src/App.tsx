@@ -778,10 +778,15 @@ export default function App() {
       const openData = connRef.current.filter(c => c.readyState === 'open');
       console.log(`CONSOLE: handleDropAction — incomingFile: ${JSON.stringify(incomingFileRef.current)} | control: ${openCtrl.length}/${controlConnRef.current.length} open | data: ${openData.length}/${connRef.current.length} open | transferRequested: ${transferRequestedRef.current}`);
 
-      // BUG 8 FIX: Reject drop if FILE_META hasn't arrived yet
+      // If FILE_META hasn't arrived yet, request it explicitly from sender over P2P control channel
       if (!incomingFileRef.current) {
-        console.warn("CONSOLE: Drop ignored — file metadata not received yet.");
-        setMessages(prev => [...prev, "ERROR: Drop failed — file info not received yet. Make sure sender has selected a file and grabbed. Check if P2P is connected."]);
+        if (openCtrl.length > 0) {
+          console.log("CONSOLE: Drop clicked but FILE_META missing — sending REQUEST_FILE_META to sender");
+          openCtrl.forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
+          setMessages(prev => [...prev, "SYSTEM: Requesting file info from sender..."]);
+        } else {
+          setMessages(prev => [...prev, "ERROR: Drop failed — P2P connection not ready yet. Please wait a moment."]);
+        }
         return;
       }
 
@@ -1576,6 +1581,25 @@ export default function App() {
                 console.log("CONSOLE: All files sent. Emitting 'dropped' to unlock room.");
                 socketRef.current.emit("dropped", roomCodeRef.current);
               }
+            }
+
+          } else if (payload.type === "REQUEST_FILE_META") {
+            console.log("CONSOLE: Received REQUEST_FILE_META from receiver. Resending FILE_META...");
+            const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
+            if (currentFile) {
+              const meta = JSON.stringify({
+                type: "FILE_META",
+                file: {
+                  name: currentFile.name,
+                  type: currentFile.type,
+                  size: currentFile.size,
+                  totalChunks: Math.ceil(currentFile.size / CHUNK_SIZE),
+                  chunkSize: CHUNK_SIZE,
+                  batchIndex: currentFileIndexRef.current,
+                  batchCount: selectedFilesRef.current.length
+                }
+              });
+              dc.send(meta);
             }
 
           } else if (payload.type === "ALL_FILES_DONE") {

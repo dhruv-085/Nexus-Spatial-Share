@@ -430,16 +430,17 @@ This file documents all bugs fixed in this project. **All future agent sessions 
 
 ---
 
-## 31. OTP Focus Traversal on Retype, Receiver Drop Button & Sender Completion
+## 32. OTP Backspace Traversal, Mobile-to-Laptop Drop Request & Complete Transfer UI
 * **Symptom**: 
-  1. OTP digit auto-advance stopped working when typing digits for a second time after clearing.
-  2. Clicking Send on mobile did not show/enable the Drop button on the laptop receiver.
-  3. Sender animation stayed stuck after file transfer completed.
+  1. Pressing Backspace in OTP input boxes erased digits in the previous box while leaving the cursor stuck in the current box.
+  2. The Drop button worked when laptop sent to mobile, but appeared unresponsive when mobile sent to laptop.
+  3. Sender animation loop remained active after transfer completion.
 * **Root Cause**: 
-  1. Synchronous `.focus()` calls inside active `input` event handlers were blocked by browser focus-guarding in WebKit/Chromium.
-  2. Receiver Drop button was set to `disabled = !incomingFile`, staying disabled if `FILE_META` was delayed over WebRTC.
-  3. `selectedFilesRef.current` was reset to `[]` BEFORE `_completeTransferCh3()` was called, leaving `completeTransfer()` without metadata to render the success screen.
+  1. Backspace in `keydown` cleared the current box without shifting focus immediately to `boxes[i-1]`. Subsequent Backspace keypresses executed on `digits_state[i] === ''` (empty), clearing `boxes[i-1]` while focus remained on `boxes[i]`. Also `maxlength="1"` blocked 2nd character input events on retype.
+  2. When mobile sent to laptop, `FILE_META` over WebRTC was occasionally delayed or missing when the laptop user clicked Drop. `handleDropAction()` returned early without requesting missing metadata from the sender.
+  3. `completeTransfer()` attempted to read `fileQueue` attributes without fallback defaults if `fileQueue` was emptied early, causing errors before adding `visible` class to `#success-screen`.
 * **Fix**: 
-  1. Wrapped focus traversal calls in `setTimeout(() => { boxes[i+1].focus(); boxes[i+1].select(); }, 10);` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2260-L2280).
-  2. Set `(btnDrop as HTMLButtonElement).disabled = false;` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L1799) whenever room locks for the receiver.
-  3. Triggered `_completeTransferCh3()` BEFORE clearing `selectedFilesRef.current` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L1560).
+  1. Updated OTP inputs to `maxlength="2"`. Updated Backspace `keydown` handler to clear current digit AND synchronously shift focus to `boxes[i-1]` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2255-L2280).
+  2. Added `REQUEST_FILE_META` message exchange between receiver and sender in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L781-L790) & [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L1583).
+  3. Added defensive fallback `finishSuccess()` execution inside `completeTransfer()` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2678-L2705).
+
