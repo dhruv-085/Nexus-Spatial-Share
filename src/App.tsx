@@ -73,7 +73,7 @@ export default function App() {
   const backgroundAudioRef = useRef<HTMLAudioElement | null>(null);
   // Watchdog: if ICE stays in 'checking' for 10s without connecting, force a rejoin
   const iceWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isGestureDropRef = useRef(false);
+  // isGestureDropRef removed — handleDropAction no longer distinguishes gesture vs button
 
   const clientIdRef = useRef<string>("");
   if (!clientIdRef.current) {
@@ -577,7 +577,6 @@ export default function App() {
             if (isPalm && lastGestureRef.current !== "palm") {
               console.log("GESTURE: DROP DETECTED - Triggering drop action");
               lastGestureRef.current = "palm";
-              isGestureDropRef.current = true;   // mark as gesture-initiated
               handleDropAction();
             } else if (!isPalm) {
               if (lastGestureRef.current === "palm") {
@@ -727,78 +726,9 @@ export default function App() {
         return;
       }
 
-      const fsaAvailable = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
-      if (fsaAvailable && !saveDirectoryHandleRef.current && !directoryPickerDeclinedRef.current && !isGestureDropRef.current) {
-        try {
-          const dirHandle = await (window as any).showDirectoryPicker({
-            mode: 'readwrite',
-            startIn: 'downloads',
-          });
-          saveDirectoryHandleRef.current = dirHandle;
-          hasSaveDirectoryRef.current = true;
-
-          // Set up stream writer for the current incoming file:
-          if (incomingFileRef.current && transferEngineRef.current) {
-            const fh = await dirHandle.getFileHandle(incomingFileRef.current.name, { create: true });
-            const wr = await fh.createWritable();
-            if (incomingFileRef.current.size > 0) {
-              await wr.truncate(incomingFileRef.current.size);
-            }
-            if ((transferEngineRef.current as any).streamWriter) {
-              await (transferEngineRef.current as any).streamWriter.close().catch(() => {});
-            }
-            transferEngineRef.current.setStreamWriter(wr);
-            opfsFileHandleRef.current = null; // clear OPFS fallback
-            console.log(`[Stream] Set stream writer to chosen directory for file: ${incomingFileRef.current.name}`);
-          }
-        } catch (err: any) {
-          if (err?.name === 'AbortError') {
-            console.warn("User cancelled directory picker");
-            directoryPickerDeclinedRef.current = true;
-          } else {
-            console.error("Directory picker error:", err);
-          }
-        }
-      }
-
-      if (!saveDirectoryHandleRef.current && typeof (window as any).showSaveFilePicker !== 'undefined' && !isGestureDropRef.current) {
-        try {
-          const handle = await (window as any).showSaveFilePicker({
-            suggestedName: incomingFileRef.current!.name,
-          });
-          const writable = await handle.createWritable();
-          if (incomingFileRef.current!.size > 0) {
-            await (writable as any).truncate(incomingFileRef.current!.size);
-          }
-          if (transferEngineRef.current) {
-            if ((transferEngineRef.current as any).streamWriter) {
-              await (transferEngineRef.current as any).streamWriter.close().catch(() => {});
-            }
-            transferEngineRef.current.setStreamWriter(writable);
-            streamFileHandleRef.current = handle; // store so we can delete on cancel
-            opfsFileHandleRef.current = null; // BUG 16 FIX: Clear OPFS fallback to prevent downloading empty/garbage file
-          }
-          console.log(`[Stream] Set stream writer from showSaveFilePicker`);
-        } catch (err: any) {
-          if (err?.name === 'AbortError') {
-            // User explicitly dismissed the save picker — abort the transfer
-            console.warn("User cancelled save file picker");
-            isGestureDropRef.current = false;
-            return;
-          }
-          // Any other error (e.g. NotAllowedError when called outside a user gesture
-          // like from a camera gesture callback) — skip the picker and fall through
-          // to the OPFS / RAM-buffer fallback that runs after this block.
-          console.warn("showSaveFilePicker unavailable, using OPFS/RAM fallback:", err?.message ?? err);
-        }
-      }
-      // Gesture drop: skip showSaveFilePicker (not allowed outside user gesture context).
-      // OPFS fallback was already set up in the FILE_META handler. File will be
-      // served as a browser download after transfer completes via handleEngineComplete.
-      if (isGestureDropRef.current) {
-        console.log("[Gesture Drop] Skipping showSaveFilePicker — will use OPFS fallback set in FILE_META handler");
-        isGestureDropRef.current = false;
-      }
+      // File saving is handled by saveFileAsync() after transfer completes.
+      // No file picker dialogs here — saveFileAsync shows directory picker ONCE
+      // for the first received file, then saves all subsequent files silently.
 
       console.log("CONSOLE: Drop recognized on receiver. Requesting transfer.");
       transferRequestedRef.current = true;
@@ -811,7 +741,6 @@ export default function App() {
         type: "START_TRANSFER",
         resumeManifest: transferEngineRef.current?.getReceivedManifest() || []
       })));
-      isGestureDropRef.current = false;
     } else {
       setMessages(prev => [...prev, "ERROR: You are the file source. Drop must be performed on the receiving device."]);
     }
@@ -941,21 +870,17 @@ export default function App() {
       saveFileAsync(blob, fileName);
     } else {
       if (opfsFileHandleRef.current) {
-        // Streamed to OPFS — add to receivedFiles with the OPFS handle.
-        // CRITICAL: do NOT call removeEntry() here. The File object returned by getFile()
-        // is tied to the OPFS entry. If we delete the entry before the user downloads,
-        // URL.createObjectURL(file) will fail with "Check internet connection" because the
-        // underlying storage is gone. We delete OPFS only AFTER a successful save.
+        // Streamed to OPFS — read file, add to panel, then auto-download
         const savedHandle = opfsFileHandleRef.current;
         opfsFileHandleRef.current = null;
         savedHandle.getFile().then((file: File) => {
+          const fileBlob = file as unknown as Blob;
           setReceivedFiles(prev => [{
             name: fileName,
-            blob: file as unknown as Blob,
+            blob: fileBlob,
             opfsHandle: savedHandle,   // keep alive — deleted after user saves
             id: Math.random().toString(36).substring(7)
           }, ...prev]);
-          setMessages(prev => [...prev, `SYSTEM: ✅ Received: "${fileName}" — tap the Download button to save.`]);
 
           const url = URL.createObjectURL(file);
           (window as any).onFileReceivedSuccess?.({
@@ -965,6 +890,9 @@ export default function App() {
             batchIndex,
             batchCount
           });
+
+          // Auto-download the file (directory picker shown ONCE for first file, then silent)
+          saveFileAsync(fileBlob, fileName);
         }).catch((err: any) => {
           console.error('Failed to retrieve OPFS file:', err);
           setMessages(prev => [...prev, `ERROR: Failed to read received file "${fileName}": ${err?.message ?? err}`]);
@@ -986,7 +914,7 @@ export default function App() {
     const fsaAvailable = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
     let savedSilently = false;
 
-    if (fsaAvailable) {
+    if (fsaAvailable && !directoryPickerDeclinedRef.current) {
       try {
         if (!hasSaveDirectoryRef.current && !isChoosingDirectoryRef.current) {
           isChoosingDirectoryRef.current = true;
@@ -997,6 +925,13 @@ export default function App() {
             });
             saveDirectoryHandleRef.current = dirHandle;
             hasSaveDirectoryRef.current = true;
+          } catch (pickerErr: any) {
+            if (pickerErr?.name === 'AbortError') {
+              // User cancelled — remember so we never ask again this session
+              directoryPickerDeclinedRef.current = true;
+            } else {
+              throw pickerErr; // re-throw for outer catch
+            }
           } finally {
             isChoosingDirectoryRef.current = false;
           }
@@ -1016,12 +951,11 @@ export default function App() {
           setMessages(prev => [...prev, `SYSTEM: Saved to folder: ${fileName}`]);
         }
       } catch (err: any) {
-        if (err.name !== 'AbortError') {
+        if (err?.name !== 'AbortError') {
           console.warn('File System Access API write failed, falling back:', err);
-        } else {
-          hasSaveDirectoryRef.current = false;
-          saveDirectoryHandleRef.current = null;
         }
+        hasSaveDirectoryRef.current = false;
+        saveDirectoryHandleRef.current = null;
       }
     }
 
