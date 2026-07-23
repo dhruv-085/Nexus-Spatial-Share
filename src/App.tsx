@@ -201,8 +201,16 @@ export default function App() {
 
         warmUpMediaPipe();
 
-        if (isTransferringRef.current && bgDuration > 25000) {
-          (window as any).Toast?.show?.('App was backgrounded. Resume transfer or re-send if paused.', 'warning');
+        if (isTransferringRef.current) {
+          (window as any).Toast?.show?.('Resuming file transfer from pause point...', 'info');
+          if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && transferRequestedRef.current && transferEngineRef.current) {
+            const openCtrl = controlConnRef.current.filter(c => c.readyState === 'open');
+            if (openCtrl.length > 0) {
+              const resumeManifest = transferEngineRef.current.getReceivedManifest();
+              console.log(`[Visibility] Auto-sending START_TRANSFER with ${resumeManifest.length} existing chunks`);
+              openCtrl.forEach(c => c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest })));
+            }
+          }
         }
       }
     };
@@ -1422,8 +1430,8 @@ export default function App() {
               );
             }
 
-            if (pendingDropActionRef.current || (isGlobalLockedRef.current && !isSourceRef.current && !transferRequestedRef.current)) {
-              console.log("CONSOLE: FILE_META received on receiver — auto-initiating drop action!");
+            if (pendingDropActionRef.current) {
+              console.log("CONSOLE: Pending drop action resolved on FILE_META arrival — initiating drop action!");
               pendingDropActionRef.current = false;
               setTimeout(() => {
                 handleDropAction();

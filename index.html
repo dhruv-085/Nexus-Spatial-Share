@@ -605,8 +605,12 @@
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       gap: 16px; padding: 56px 24px 36px;
       opacity: 0; pointer-events: none; transition: opacity 0.3s;
+      background: transparent;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
-    #progress-screen.visible { opacity: 1; pointer-events: all; }
+    #progress-screen.visible { opacity: 1; }
+    #progress-screen > * { pointer-events: auto; }
 
     .progress-file-label {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -653,9 +657,9 @@
     /* cancel button */
     .btn-cancel {
       background: transparent; border: none; border-radius: 12px; padding: 10px 24px;
-      color: rgba(239,68,68,0.6); cursor: pointer;
-      font-family: 'Space Grotesk', sans-serif; font-size: 13px; font-weight: 600;
-      box-shadow: inset 0 0 0 1px rgba(239,68,68,0.2);
+      color: var(--text-muted); cursor: pointer; font-family: 'Space Grotesk', sans-serif;
+      font-size: 12px; font-weight: 500; letter-spacing: 0.3px;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
       transition: color 0.2s, box-shadow 0.2s, background 0.2s;
     }
     .btn-cancel:hover { color: var(--danger); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.4); background: rgba(239,68,68,0.06); }
@@ -693,6 +697,9 @@
       gap: 16px; padding: 56px 24px 36px;
       opacity: 0; pointer-events: none; transition: opacity 0.35s;
       text-align: center;
+      background: rgba(10, 10, 10, 0.88);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
     }
     #success-screen.visible { opacity: 1; pointer-events: all; }
 
@@ -809,8 +816,10 @@
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       gap: 16px; padding: 56px 24px 36px;
       opacity: 0; pointer-events: none; transition: opacity 0.35s;
+      background: transparent;
     }
-    #receive-progress.visible { opacity: 1; pointer-events: all; }
+    #receive-progress.visible { opacity: 1; }
+    #receive-progress > * { pointer-events: auto; }
 
     .receive-label {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -2260,15 +2269,15 @@
           setDigit(i,'');dimGlobe(i);updateQR();
         }else if(i>0){
           setDigit(i-1,'');dimGlobe(i-1);updateQR();
-          boxes[i-1].focus(); boxes[i-1].select();
+          boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
         }
       }
       else if(e.key==='Delete'){
         e.preventDefault();
         setDigit(i,'');dimGlobe(i);updateQR();
       }
-      else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();boxes[i-1].focus();boxes[i-1].select();}
-      else if(e.key==='ArrowRight'&&i<3){e.preventDefault();boxes[i+1].focus();boxes[i+1].select();}
+      else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();boxes[i-1].focus();try{boxes[i-1].select();}catch(_){}}
+      else if(e.key==='ArrowRight'&&i<3){e.preventDefault();boxes[i+1].focus();try{boxes[i+1].select();}catch(_){}}
     });
     box.addEventListener('input',()=>{
       clearError();const raw=box.value.replace(/\D/g,'');
@@ -2276,7 +2285,8 @@
         const ch=raw[raw.length-1];
         setDigit(i,ch);triggerGlobe(i);updateQR();
         if(i<3){
-          boxes[i+1].focus(); boxes[i+1].select();
+          boxes[i+1].focus();
+          try{ boxes[i+1].select(); }catch(_){}
         }
       }else{
         setDigit(i,'');dimGlobe(i);updateQR();
@@ -2287,9 +2297,10 @@
       const pasted=(e.clipboardData||window.clipboardData).getData('text').replace(/\D/g,'').slice(0,4);
       resetGlobe();pasted.split('').forEach((ch,idx)=>{setDigit(idx,ch);setTimeout(()=>triggerGlobe(idx),idx*80);});
       for(let j=pasted.length;j<4;j++)setDigit(j,'');
-      boxes[Math.min(pasted.length,3)].focus();setTimeout(updateQR,350);
+      boxes[Math.min(pasted.length,3)].focus();try{boxes[Math.min(pasted.length,3)].select();}catch(_){}setTimeout(updateQR,350);
     });
-    box.addEventListener('focus',()=>box.select());
+    box.addEventListener('focus',()=>{try{box.select();}catch(_){}});
+    box.addEventListener('click',()=>{try{box.select();}catch(_){}});
   });
   // Render globe immediately on startup
   kick();
@@ -2659,8 +2670,9 @@
       }
     }
 
-    const totalBytes = fileQueue.reduce((s,f)=>s+f.size,0) || (80*1048576);
-    const remaining = totalBytes * (1 - progress);
+    const activeFile = (fileQueue && fileQueue[idx]) ? fileQueue[idx] : (fileQueue && fileQueue[0] ? fileQueue[0] : null);
+    const fileBytes = activeFile ? activeFile.size : (fileQueue.reduce((s,f)=>s+(f.size||0),0) || (80*1048576));
+    const remaining = fileBytes * (1 - progress);
     const etaSec = speedMbps > 0 ? remaining / (speedMbps * 1048576) : 0;
     const etaStr = speedMbps > 0 ? (etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's') : '—';
     const statsEl = document.getElementById('progress-stats');
@@ -2699,6 +2711,13 @@
       }
       const ss = document.getElementById('success-screen');
       if (ss) ss.classList.add('visible');
+
+      // Auto-dismiss sender success modal after 6s (matching receiver dismissSuccess behavior)
+      setTimeout(() => {
+        if (document.getElementById('success-screen').classList.contains('visible')) {
+          sendAnotherFile();
+        }
+      }, 6000);
     };
 
     if (window.ParticleSystem && typeof window.ParticleSystem.explodeSphere === 'function') {

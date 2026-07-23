@@ -443,4 +443,61 @@ This file documents all bugs fixed in this project. **All future agent sessions 
   1. Updated Backspace handler in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2255-L2265) so Backspace on a filled box clears ONLY that box and stays in place. Focus moves to the previous box only when Backspace is pressed on an empty box.
   2. Added `pendingDropActionRef` and an auto-trigger block inside `FILE_META` handler in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L1425) to automatically execute `handleDropAction()` as soon as `FILE_META` arrives.
 
+---
+
+## 34. OTP Traversal Focus Sync
+* **Symptom**: Clearing room code digits and re-entering digits caused focus auto-advance to stall or get trapped in box 4.
+* **Root Cause**: Desynchronized focus selection handling on input boxes during rapid re-entry.
+* **Fix**: Refactored `keydown`, `input`, and `focus` event handlers in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2254-L2294) to cleanly shift focus backward/forward with `try { select() }` guards.
+
+---
+
+## 35. Premature Auto-Transfer Execution & Camera Permission Decoupling
+* **Symptom**: Sender clicking Grab/Send immediately started transfer on receiver without receiver clicking Drop or performing a gesture, and denying camera permission disabled `#btn-drop`.
+* **Root Cause**: `FILE_META` handler in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L1425) contained an automatic fallback `(isGlobalLockedRef.current && !isSourceRef.current && !transferRequestedRef.current)` that executed `handleDropAction()` without user input.
+* **Fix**: Removed passive auto-execution condition from `src/App.tsx`. Decoupled `#btn-drop` button availability from webcam permission states.
+
+---
+
+## 36. Symmetrical Telemetry Speed & ETA Calculations
+* **Symptom**: Sender and Receiver progress panels displayed inconsistent ETAs and speed metrics during multi-file transfers.
+* **Root Cause**: `updateSenderProgress` calculated remaining bytes using `totalBatchBytes * (1 - progress)`, whereas `updateReceiverProgress` used `singleFileBytes * (1 - progress)`.
+* **Fix**: Updated `updateSenderProgress` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2664-L2668) to calculate remaining bytes using `activeFile.size * (1 - progress)`, aligning readouts on both ends.
+
+---
+
+## 37. Sender Transfer Completion Auto-Dismiss
+* **Symptom**: After a transfer completed, the receiver returned to normal idle state while the sender remained locked on the success modal.
+* **Root Cause**: `completeTransfer()` displayed `#success-screen` but lacked an auto-dismiss lifecycle timer.
+* **Fix**: Added a 6-second `setTimeout` inside `completeTransfer()` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2706-L2711) to automatically invoke `sendAnotherFile()`, clearing gravity wells, particle repellers, and returning sender UI back to normal idle state.
+
+---
+
+---
+
+## 39. OTP Digit Backspace Traversal & Re-entry Focus Fix
+* **Symptom**: Once a user entered all 4 room code digits and attempted to erase a mistake using Backspace, the focus immediately jumped backward to the previous box while erasing the current box, causing subsequent typed digits to overwrite the wrong box.
+* **Root Cause**: The `Backspace` keydown listener in `index.html` contained `if (i > 0) { boxes[i-1].focus(); }` inside the `digits_state[i] !== ''` branch, shifting focus backward on every backspace press even when the target box was filled.
+* **Fix**: Updated `index.html` so backspacing a filled box clears ONLY that box (`setDigit(i, '')`) and maintains focus on box `i`. Focus shifts backward to `boxes[i-1]` ONLY when Backspace is pressed on an already-empty box (`digits_state[i] === ''`).
+
+---
+
+## 40. Background Canvas Animation Masking, Missing ETA/Cancel UI & Foreground Transfer Resume
+* **Symptom**: 
+  1. Selecting a file and clicking Send hid the entire 3D background particle canvas and sending particle repeller animation.
+  2. Telemetry speed and ETA displayed missing or empty strings (`—`) during initial transfer ticks.
+  3. Cancel transfer button `#btn-cancel` / `#btn-rx-cancel` remained hidden on new transfers if previously toggled.
+  4. Minimizing or backgrounding the browser on mobile/desktop interrupted transfers without auto-resuming on return.
+* **Root Cause**: 
+  1. `#progress-screen` and `#receive-progress` contained opaque background styling `background: rgba(10, 10, 10, 0.88)` and `backdrop-filter: blur(20px)` covering `inset: 0` at `z-index: 25`, masking out `#nexus-canvas` (`z-index: 0`).
+  2. Cancel button elements retained `style.display = 'none'` after cancel modal confirmations without being reset during progress screen initialization.
+  3. `updateSenderProgress` and `updateReceiverProgress` did not provide fallback strings when `speedMbps` was 0.
+  4. App visibility handler did not trigger `START_TRANSFER` with `resumeManifest` upon returning to foreground during active transfers.
+* **Fix**: 
+  1. Changed `#progress-screen` and `#receive-progress` container backgrounds to `transparent` and `backdrop-filter: none`, setting `pointer-events: none` on container overlays and `pointer-events: auto` on interactive UI cards, exposing the background particle canvas and physics animations.
+  2. Explicitly reset cancel buttons (`#btn-cancel` & `#btn-rx-cancel`) to `style.display = ''` and hid confirmation dialogs whenever progress screens open.
+  3. Formatted ETA output cleanly with fallbacks (`0.0 MB/s · Calculating...` and `~Xs remaining`).
+  4. Enhanced `handleVisibilityChange` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L201-L215) to auto-emit `START_TRANSFER` with `resumeManifest` and display a toast notification when returning to foreground during an active transfer.
+
+
 
