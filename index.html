@@ -610,7 +610,8 @@
       -webkit-backdrop-filter: none;
     }
     #progress-screen.visible { opacity: 1; }
-    #progress-screen > * { pointer-events: auto; }
+    #progress-screen > * { pointer-events: none; }
+    #progress-screen.visible > * { pointer-events: auto; }
 
     .progress-file-label {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -642,7 +643,14 @@
       color: var(--text-dim);
     }
     .progress-meta {
-      text-align: center; display: flex; flex-direction: column; gap: 4px;
+      text-align: center; display: flex; flex-direction: column; gap: 6px;
+      background: rgba(10, 10, 15, 0.75);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 12px 20px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     }
     .progress-filename {
       font-family: 'JetBrains Mono', monospace; font-size: 12px;
@@ -656,10 +664,12 @@
 
     /* cancel button */
     .btn-cancel {
-      background: transparent; border: none; border-radius: 12px; padding: 10px 24px;
+      background: rgba(10, 10, 15, 0.75); border: none; border-radius: 12px; padding: 10px 24px;
       color: var(--text-muted); cursor: pointer; font-family: 'Space Grotesk', sans-serif;
       font-size: 12px; font-weight: 500; letter-spacing: 0.3px;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1), 0 4px 16px rgba(0,0,0,0.3);
       transition: color 0.2s, box-shadow 0.2s, background 0.2s;
     }
     .btn-cancel:hover { color: var(--danger); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.4); background: rgba(239,68,68,0.06); }
@@ -819,7 +829,8 @@
       background: transparent;
     }
     #receive-progress.visible { opacity: 1; }
-    #receive-progress > * { pointer-events: auto; }
+    #receive-progress > * { pointer-events: none; }
+    #receive-progress.visible > * { pointer-events: auto; }
 
     .receive-label {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -2093,7 +2104,9 @@
 
   let t=0;
   function loop(){
-    requestAnimationFrame(loop); t++;
+    requestAnimationFrame(loop);
+    if (document.visibilityState === 'hidden') return;
+    t++;
     ctx.fillStyle='rgba(5,5,5,0.22)'; ctx.fillRect(0,0,canvas.width,canvas.height);
 
     // Normal drift
@@ -2147,7 +2160,9 @@
     return{sx:GCX+rx*RADIUS*p,sy:GCY+ry*RADIUS*p,z:rz,scale:p};
   }
   function drawGlobe(){
-    rafId=null;tick++;globeRot+=0.005;gCtx.clearRect(0,0,GW,GH);
+    rafId=null;
+    if (document.visibilityState === 'hidden') return;
+    tick++;globeRot+=0.005;gCtx.clearRect(0,0,GW,GH);
     const projected=nodes3D.map(n=>project(n,globeRot));
 
     // Animate glow values
@@ -2263,10 +2278,13 @@
   boxes.forEach((box,i)=>{
     box.addEventListener('keydown',e=>{
       clearError();
-      if(e.key==='Backspace'){
+      if(e.key==='Backspace' || e.keyCode===8){
         e.preventDefault();
         if(digits_state[i]!==''){
           setDigit(i,'');dimGlobe(i);updateQR();
+          if(i>0){
+            boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
+          }
         }else if(i>0){
           setDigit(i-1,'');dimGlobe(i-1);updateQR();
           boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
@@ -2279,17 +2297,43 @@
       else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();boxes[i-1].focus();try{boxes[i-1].select();}catch(_){}}
       else if(e.key==='ArrowRight'&&i<3){e.preventDefault();boxes[i+1].focus();try{boxes[i+1].select();}catch(_){}}
     });
+    box.addEventListener('beforeinput',e=>{
+      if(e.inputType==='deleteContentBackward'){
+        clearError();
+        if(digits_state[i]!==''){
+          setDigit(i,'');dimGlobe(i);updateQR();
+          if(i>0){
+            boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
+          }
+        }else if(i>0){
+          setDigit(i-1,'');dimGlobe(i-1);updateQR();
+          boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
+        }
+      }
+    });
     box.addEventListener('input',()=>{
       clearError();const raw=box.value.replace(/\D/g,'');
       if(raw.length>0){
-        const ch=raw[raw.length-1];
-        setDigit(i,ch);triggerGlobe(i);updateQR();
-        if(i<3){
-          boxes[i+1].focus();
-          try{ boxes[i+1].select(); }catch(_){}
+        if(raw.length>1){
+          for(let k=0;k<raw.length&&(i+k)<4;k++){
+            setDigit(i+k,raw[k]);triggerGlobe(i+k);
+          }
+          updateQR();
+          const nextFocus=Math.min(i+raw.length,3);
+          boxes[nextFocus].focus();try{boxes[nextFocus].select();}catch(_){}
+        }else{
+          const ch=raw[raw.length-1];
+          setDigit(i,ch);triggerGlobe(i);updateQR();
+          if(i<3){
+            boxes[i+1].focus();
+            try{ boxes[i+1].select(); }catch(_){}
+          }
         }
-      }else{
+      }else if(digits_state[i]!==''){
         setDigit(i,'');dimGlobe(i);updateQR();
+        if(i>0){
+          boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
+        }
       }
     });
     box.addEventListener('paste',e=>{

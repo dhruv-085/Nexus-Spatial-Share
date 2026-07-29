@@ -74,6 +74,7 @@ export default function App() {
   const backgroundAudioRef = useRef<HTMLAudioElement | null>(null);
   // Watchdog: if ICE stays in 'checking' for 10s without connecting, force a rejoin
   const iceWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingStartTransferRef = useRef<{ file: File, resumeManifest: number[] } | null>(null);
   // isGestureDropRef removed — handleDropAction no longer distinguishes gesture vs button
 
   const clientIdRef = useRef<string>("");
@@ -280,7 +281,7 @@ export default function App() {
 
     socket.on("peer-disconnected", () => {
       console.log("Peer disconnected");
-      (window as any).Signaling?.onPeerLeft?.();
+      (window as any).Signaling?.onPeerLeft?.(isTransferringRef.current);
     });
 
     socket.on("room-status", async ({ status, role, code }) => {
@@ -1193,10 +1194,15 @@ export default function App() {
         console.log("[ICE] Disconnected — attempting ICE restart");
         try { pc.restartIce(); } catch (e) { console.warn('[ICE] restartIce() not supported:', e); }
       } else if (state === 'failed') {
-        // Full ICE failure — tear down and rejoin
+        // Full ICE failure — tear down and restart signaling after 1.5s
         if (iceWatchdogRef.current) { clearTimeout(iceWatchdogRef.current); iceWatchdogRef.current = null; }
         connectedRef.current = false;
         setConnected(false);
+        if (isTransferringRef.current) {
+          console.warn("[ICE] ICE failed mid-transfer! Cancelling transfer and showing error.");
+          cancelTransfer();
+          (window as any).showPeerDisconnected?.(true);
+        }
         console.log("[ICE] Failed — tearing down and restarting WebRTC handshake in 1.5s...");
         pc.close();
         if (pcRef.current === pc) {
@@ -1315,6 +1321,12 @@ export default function App() {
             }
           });
         }
+        if (pendingStartTransferRef.current && connRef.current.some(c => c.readyState === 'open')) {
+          console.log("CONSOLE: Data channel opened — executing pending transfer!");
+          const pending = pendingStartTransferRef.current;
+          pendingStartTransferRef.current = null;
+          executeTransfer(pending.file, pending.resumeManifest);
+        }
       } else {
         console.log(`DataChannel ${dc.label} open. Waiting for remaining channels... (data: ${connRef.current.filter(c=>c.readyState==='open').length}/${connRef.current.length}, ctrl: ${controlConnRef.current.filter(c=>c.readyState==='open').length}/${controlConnRef.current.length})`);
       }
@@ -1337,8 +1349,15 @@ export default function App() {
       }
       if (connRef.current.length === 0 && controlConnRef.current.length === 0) {
         setConnected(false);
-        transferEngineRef.current?.destroy();
-        transferEngineRef.current = null;
+        connectedRef.current = false;
+        if (isTransferringRef.current) {
+          console.warn("CONSOLE: WebRTC channels closed mid-transfer! Cancelling and showing error.");
+          cancelTransfer();
+          (window as any).showPeerDisconnected?.(true);
+        } else {
+          transferEngineRef.current?.destroy();
+          transferEngineRef.current = null;
+        }
       }
     };
 
@@ -1500,7 +1519,13 @@ export default function App() {
             setMessages(prev => [...prev, "SYSTEM: Received START_TRANSFER from peer. Checking files..."]);
             const fileToSend = selectedFilesRef.current[currentFileIndexRef.current];
             if (fileToSend) {
-              executeTransfer(fileToSend, payload.resumeManifest || []);
+              const openDataChans = connRef.current.filter(c => c.readyState === 'open');
+              if (openDataChans.length > 0) {
+                executeTransfer(fileToSend, payload.resumeManifest || []);
+              } else {
+                console.warn("CONSOLE: Received START_TRANSFER but data channels not open yet — queuing pendingStartTransfer.");
+                pendingStartTransferRef.current = { file: fileToSend, resumeManifest: payload.resumeManifest || [] };
+              }
             } else {
               setMessages(prev => [...prev, "ERROR: Received START_TRANSFER but no file is selected (selectedFiles is empty)."]);
             }

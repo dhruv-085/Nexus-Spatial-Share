@@ -64,3 +64,24 @@ This file tracks the implementation progress of the 8 bugs identified in the Nex
   - **Files**: `index.html`
   - **Status**: Completed
 
+- [x] **Task 16**: Sender Stuck in Animation Loop on Completion
+  - **Files**: `index.html`
+  - **Status**: Completed
+
+- [x] **Task 17**: Missing Speed/ETA Metrics on Receiver Progress Screen
+  - **Files**: `index.html`, `src/App.tsx`
+  - **Status**: Completed
+
+- [x] **Task 18**: Stale File Selection in Sender Queue
+  - **Files**: `index.html`
+  - **Status**: Completed
+
+- [x] **Task 19**: Multiple Directory Picker Prompts on Desktop Receiver (FSA)
+  - **Files**: `src/App.tsx`
+  - **Status**: Completed
+
+- [x] **Task 20**: Chopped Logo on Mobile Viewports (Notch Overlaps)
+  - **Files**: `index.html`
+  - **Status**: Completed
+
+

@@ -497,7 +497,25 @@ This file documents all bugs fixed in this project. **All future agent sessions 
   1. Changed `#progress-screen` and `#receive-progress` container backgrounds to `transparent` and `backdrop-filter: none`, setting `pointer-events: none` on container overlays and `pointer-events: auto` on interactive UI cards, exposing the background particle canvas and physics animations.
   2. Explicitly reset cancel buttons (`#btn-cancel` & `#btn-rx-cancel`) to `style.display = ''` and hid confirmation dialogs whenever progress screens open.
   3. Formatted ETA output cleanly with fallbacks (`0.0 MB/s · Calculating...` and `~Xs remaining`).
-  4. Enhanced `handleVisibilityChange` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L201-L215) to auto-emit `START_TRANSFER` with `resumeManifest` and display a toast notification when returning to foreground during an active transfer.
 
+---
 
-
+## 41. OTP Traversal, Drop Zone Click Pointer Scoping, WebRTC P2P Race & CPU Animation Cleanup
+* **Symptom**:
+  1. **OTP Traversal**: Erasing digits in filled room code boxes did not immediately move focus backward to the previous box on mobile or desktop keyboards.
+  2. **Drop Zone Hitbox**: The central region of `#drop-zone` was unclickable, responding to file select clicks only on its outermost edges.
+  3. **Transfer Race Condition**: Clicking Send showed progress UI but transfer stayed at `0.0 MB/s · Calculating...` or receiver remained at `waiting for transfer` when data channels were still connecting.
+  4. **Stuck Animation Loop on Disconnect**: Peer disconnection or WebRTC ICE failure mid-transfer left the sender/receiver looping in transfer state animations without displaying an error modal.
+  5. **High CPU Utilization**: Background tabs and idle screens consumed high CPU due to unthrottled `requestAnimationFrame` particle and globe render loops.
+* **Root Cause**:
+  1. OTP `keydown` and `input` listeners did not advance focus to `boxes[i-1]` on backspacing a filled digit box, requiring a second keypress. Android virtual keyboards also failed to trigger standard keydown events for backspace without `beforeinput` fallback.
+  2. `#progress-screen > *` and `#receive-progress > *` CSS rules applied `pointer-events: auto` to direct children at `z-index: 25` even when container `opacity` was 0, capturing clicks in the center of `#drop-zone` (`z-index: 10`).
+  3. `executeTransfer` and `FILE_META` dispatch bailed out if data/control channels were still connecting (`readyState !== 'open'`) when `START_TRANSFER` or Grab arrived, without queuing them for dispatch upon channel open.
+  4. `pc.oniceconnectionstatechange` `'failed'` and `dc.onclose` did not invoke `cancelTransfer()` or `(window as any).showPeerDisconnected?.(true)`, leaving UI refs (`isTransferringRef`) set to true.
+  5. `loop()`, `drawGlobe()`, and `lerpSphereToTouch()` ran `requestAnimationFrame` continuously even when `document.visibilityState === 'hidden'` or when nodes were idle.
+* **Fix**:
+  1. Updated OTP `keydown`, `beforeinput`, and `input` listeners in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2274-L2305) to immediately erase and shift focus to `boxes[i-1]` on backspace, and support multi-character composition for mobile IMEs.
+  2. Scoped `#progress-screen.visible > *` and `#receive-progress.visible > *` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L613-L614) so children only capture pointer events when screen is `.visible`.
+  3. Added `pendingStartTransferRef` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L75) to queue transfer execution while WebRTC channels finish opening, automatically flushing when `handleOpen` fires.
+  4. Added `cancelTransfer()` and `(window as any).showPeerDisconnected?.(true)` calls in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L1200-L1345) for ICE failures and mid-transfer channel closures.
+  5. Added `document.visibilityState === 'hidden'` checks to `loop()`, `drawGlobe()`, and `lerpSphereToTouch()` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2106-L2160) to eliminate CPU usage when tab is hidden or idle.
