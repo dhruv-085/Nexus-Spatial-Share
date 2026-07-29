@@ -860,6 +860,17 @@
       position: fixed; inset: 0; z-index: 24; pointer-events: none; display: none;
     }
 
+    /* Transfer rings — self-contained layer, never touches the particle field.
+       Sits directly beneath the progress ring SVG (z-25) so rings read as
+       emanating from behind it. Owned solely by TransferRings.start/stop. */
+    #transfer-rings-canvas {
+      position: fixed; inset: 0; z-index: 24; pointer-events: none; display: none;
+    }
+
+    /* Drop zone is removed from layout for the whole transfer, on both roles. */
+    body.transferring #drop-zone,
+    body.transferring #queue-wrap { display: none !important; }
+
     .receive-success-icon {
       width: 72px; height: 72px; border-radius: 50%;
       background: rgba(140,231,255,0.08);
@@ -1724,6 +1735,9 @@
 <!-- SHOCKWAVE CANVAS -->
 <canvas id="shockwave-canvas"></canvas>
 
+<!-- TRANSFER RINGS CANVAS — outward (sending) / inward (receiving) -->
+<canvas id="transfer-rings-canvas"></canvas>
+
 <!-- PROGRESS SCREEN -->
 <div id="progress-screen">
   <div class="progress-file-label" id="progress-file-label"></div>
@@ -2512,6 +2526,210 @@
     }, 600);
   });
   kick();
+})();
+
+/* ═══════════════════════════════════════════════
+   CHAPTER 3A — TRANSFER VISUALS
+   Self-contained transfer animation layer.
+
+   Shares NO state with ParticleSystem: the background particle field is
+   permanently live and hover-interactive, including mid-transfer (R1).
+   A missed teardown call can leave rings on screen, but it can no longer
+   corrupt the background — that failure mode is structurally gone.
+
+   Every path that BEGINS a transfer calls window.enterTransferVisuals(mode).
+   Every path that ENDS one calls window.resetTransferVisuals().
+   resetTransferVisuals() is the only function permitted to stop the rings,
+   hide the progress overlays, and restore the drop zone. It is idempotent,
+   synchronous, and never defers work into a callback, RAF, or timer (KTD3).
+═══════════════════════════════════════════════ */
+(function () {
+
+  /* ── Ring animation parameters ── */
+  const SPAWN_MS    = 700;   // interval between ring births
+  const LIFE_MS     = 1400;  // ring lifetime
+  const TRAVEL_PX   = 260;   // radial distance covered over a lifetime
+  const MAX_RINGS   = 4;     // concurrent cap
+  const R0_RATIO    = 0.4556; // (r 80 + strokeWidth 4 / 2) / 180 viewBox
+
+  // Design-system accents: tertiary #8ce7ff, primary #699cff, secondary #ddb7ff
+  const OUT_FROM = [140, 231, 255], OUT_TO = [105, 156, 255];
+  const IN_FROM  = [221, 183, 255], IN_TO  = [140, 231, 255];
+
+  const canvas = document.getElementById('transfer-rings-canvas');
+  const ctx = canvas ? canvas.getContext('2d') : null;
+
+  let rings = [];
+  let rafId = null;
+  let mode = null;          // 'out' | 'in' | null
+  let lastSpawnAt = 0;
+
+  const reducedMotion = () =>
+    window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const mixRGBA = (from, to, t, alpha) =>
+    'rgba(' + Math.round(lerp(from[0], to[0], t)) + ',' +
+              Math.round(lerp(from[1], to[1], t)) + ',' +
+              Math.round(lerp(from[2], to[2], t)) + ',' + alpha.toFixed(3) + ')';
+
+  /**
+   * Resolve the emit origin from the live DOM every frame, so the rings stay
+   * pinned to the progress ring's circumference across breakpoints and resizes.
+   * No cached geometry — a resize is absorbed on the next frame for free.
+   */
+  function resolveOrigin() {
+    const wrap =
+      document.querySelector('#progress-screen.visible .progress-ring-wrap') ||
+      document.querySelector('#receive-progress.visible .progress-ring-wrap') ||
+      // Fall back to whichever wrap is actually laid out, in case the overlay's
+      // .visible class lands a frame later than the animation start.
+      Array.prototype.find.call(
+        document.querySelectorAll('.progress-ring-wrap'),
+        el => el.offsetParent !== null
+      );
+
+    if (!wrap) {
+      // Nothing rendered yet — centre of viewport at the default 180px geometry.
+      return { x: window.innerWidth / 2, y: window.innerHeight / 2, r0: 180 * R0_RATIO };
+    }
+    const rect = wrap.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      r0: rect.width * R0_RATIO
+    };
+  }
+
+  function resizeCanvas() {
+    if (!canvas) return;
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+
+  function drawFrame() {
+    rafId = requestAnimationFrame(drawFrame);
+
+    // Skip the work, not the loop, while backgrounded (matches the CPU fix in
+    // code_debugged.md #41). stop() is never reachable only through this loop.
+    if (document.visibilityState === 'hidden') return;
+    if (!ctx || !mode) return;
+
+    if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+      resizeCanvas();
+    }
+
+    const now = Date.now();
+    const origin = resolveOrigin();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (reducedMotion()) {
+      // One static ring at the progress ring's edge, no radial motion.
+      const c = mode === 'out' ? OUT_FROM : IN_FROM;
+      ctx.beginPath();
+      ctx.arc(origin.x, origin.y, origin.r0 + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = mixRGBA(c, c, 0, 0.32);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      return;
+    }
+
+    if (now - lastSpawnAt >= SPAWN_MS && rings.length < MAX_RINGS) {
+      rings.push({ born: now });
+      lastSpawnAt = now;
+    }
+
+    const from = mode === 'out' ? OUT_FROM : IN_FROM;
+    const to   = mode === 'out' ? OUT_TO   : IN_TO;
+
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const t = (now - rings[i].born) / LIFE_MS;
+      if (t >= 1) { rings.splice(i, 1); continue; }
+
+      let radius, alpha, width;
+      if (mode === 'out') {
+        const eased = 1 - Math.pow(1 - t, 3);            // ease-out: fast, then settle
+        radius = origin.r0 + TRAVEL_PX * eased;
+        alpha  = 0.45 * (1 - t);                          // 0.45 → 0
+        width  = lerp(2, 0.75, t);
+      } else {
+        const eased = Math.pow(t, 2);                     // ease-in: accelerate inward
+        radius = origin.r0 + TRAVEL_PX * (1 - eased);
+        // Fade in, peak, then fade to near-zero so the ring does not pop at the edge.
+        alpha  = t < 0.25 ? 0.45 * (t / 0.25) : lerp(0.45, 0.03, (t - 0.25) / 0.75);
+        width  = lerp(0.75, 2, t);
+      }
+
+      if (alpha <= 0 || radius <= 0) continue;
+      ctx.beginPath();
+      ctx.arc(origin.x, origin.y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = mixRGBA(from, to, t, alpha);
+      ctx.lineWidth = width;
+      ctx.stroke();
+    }
+  }
+
+  const TransferRings = {
+    /** Start emitting rings. Calling it again with the same mode is a no-op. */
+    start(nextMode) {
+      if (!canvas || !ctx) return;
+      if (nextMode !== 'out' && nextMode !== 'in') return;
+      if (rafId !== null && mode === nextMode) return; // already running this mode
+
+      mode = nextMode;
+      rings = [];
+      lastSpawnAt = 0;
+      resizeCanvas();
+      canvas.style.display = 'block';
+      if (rafId === null) rafId = requestAnimationFrame(drawFrame);
+    },
+
+    /** Stop and clear. Takes no callback, returns nothing, safe at any time. */
+    stop() {
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+      mode = null;
+      rings = [];
+      lastSpawnAt = 0;
+      if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (canvas) canvas.style.display = 'none';
+    },
+
+    /* Exposed for verification from the console and the regression sweep. */
+    _debug() {
+      const now = Date.now();
+      const origin = resolveOrigin();
+      return {
+        mode, rafId, count: rings.length,
+        r0: origin.r0,
+        radii: rings.map(ring => {
+          const t = Math.min((now - ring.born) / LIFE_MS, 1);
+          return mode === 'out'
+            ? origin.r0 + TRAVEL_PX * (1 - Math.pow(1 - t, 3))
+            : origin.r0 + TRAVEL_PX * (1 - Math.pow(t, 2));
+        })
+      };
+    }
+  };
+
+  window.TransferRings = TransferRings;
+
+  /* ── The one lifecycle owner ── */
+
+  window.enterTransferVisuals = function enterTransferVisuals(nextMode) {
+    document.body.classList.add('transferring');
+    TransferRings.start(nextMode === 'in' ? 'in' : 'out');
+  };
+
+  window.resetTransferVisuals = function resetTransferVisuals() {
+    TransferRings.stop();
+    document.body.classList.remove('transferring');
+
+    const ps = document.getElementById('progress-screen');
+    if (ps) ps.classList.remove('visible');
+    const rp = document.getElementById('receive-progress');
+    if (rp) rp.classList.remove('visible');
+  };
+
 })();
 
 /* ═══════════════════════════════════════════════
