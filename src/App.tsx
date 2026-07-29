@@ -1912,10 +1912,6 @@ export default function App() {
 
   useEffect(() => {
     if (isTransferring && isSource) {
-      (window as any).ParticleSystem?.startTransfer(
-        () => transferProgress / 100,
-        () => telemetry?.speedMBps ?? 0
-      );
       (window as any).updateSenderProgress?.(
         transferProgress / 100,
         telemetry?.speedMBps ?? 0,

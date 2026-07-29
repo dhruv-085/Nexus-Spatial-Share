@@ -2865,18 +2865,8 @@
     const qw=document.getElementById('queue-wrap'); qw.style.opacity='0'; qw.style.transition='opacity 0.3s';
     document.getElementById('control-panel').classList.remove('visible');
 
-    // Start outward repeller well
-    // Order matters: stop clears gravWell→null, so we must set AFTER stop
-    if (typeof window.stopGravityWellIdle === 'function') {
-      window.stopGravityWellIdle();
-    }
-    ParticleSystem.setGravityWell(CX(), CY(), 0.35, true);
-    if (typeof window.startGravityWellIdle === 'function') {
-      window.startGravityWellIdle();
-    }
-
-    // Brief shockwave on grab then start transfer
-    startShockwave(CX(), CY());
+    // Rings radiate outward for the duration of the send.
+    window.enterTransferVisuals('out');
 
     setTimeout(() => {
       // Real WebRTC backend is handling this in App.tsx
@@ -2951,17 +2941,9 @@
   function completeTransfer() {
     if(transferRafId) { cancelAnimationFrame(transferRafId); transferRafId = null; }
     isTransferring = false; sphereFormed = false;
-    if (typeof window.stopGravityWellIdle === 'function') {
-      window.stopGravityWellIdle();
-    }
-    if (window.ParticleSystem) {
-      ParticleSystem.clearGravityWell();
-    }
-    // Hide progress screen first
-    const ps = document.getElementById('progress-screen');
-    if (ps) ps.classList.remove('visible');
-    const dz = document.getElementById('drop-zone');
-    if (dz) dz.classList.add('fade-out');
+
+    // Exit path 1 of 7 — success (sender).
+    window.resetTransferVisuals();
 
     const finishSuccess = () => {
       if (window.ParticleSystem) { ParticleSystem.releaseAll(); }
@@ -3023,21 +3005,13 @@
       window.stopReceiverAnimation();
     }
 
-    document.getElementById('progress-screen').classList.remove('visible');
-    document.getElementById('receive-progress').classList.remove('visible');
+    // Exit path 2 of 7 — cancel from either side.
+    window.resetTransferVisuals();
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
-    
+
     hideCancelConfirm();
     if (typeof window.hideRxCancelConfirm === 'function') window.hideRxCancelConfirm();
-
-    if (typeof window.stopGravityWellIdle === 'function') {
-      window.stopGravityWellIdle();
-    }
-
-    if (window.ParticleSystem) {
-      ParticleSystem.releaseAll();
-    }
 
     if (typeof resetSenderUI === 'function') resetSenderUI();
 
@@ -3076,8 +3050,9 @@
     if(transferRafId) cancelAnimationFrame(transferRafId);
     isTransferring=false; sphereFormed=false; fileQueue=[];
     if (typeof window.onFilesSelected === 'function') window.onFilesSelected([]);
+    // Exit path 3 of 7 — leave room.
+    window.resetTransferVisuals();
     document.getElementById('success-screen').classList.remove('visible');
-    document.getElementById('progress-screen').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
     document.getElementById('role-picker').classList.remove('visible');
     document.getElementById('logo-home').style.display='flex';
@@ -3090,10 +3065,6 @@
     document.getElementById('control-panel').classList.remove('visible');
     document.getElementById('home-screen').classList.remove('hidden');
     document.getElementById('join-error').textContent='';
-    if (typeof window.stopGravityWellIdle === 'function') {
-      window.stopGravityWellIdle();
-    }
-    ParticleSystem.releaseAll();
   };
   document.getElementById('btn-leave').addEventListener('click', leaveRoom);
 
@@ -3106,20 +3077,28 @@
       window.onFilesSelected([]);
     }
 
+    // Every lookup here is guarded: #btn-release does not exist in the markup
+    // (the control panel is #btn-grab / #btn-drop), so the old unguarded chain
+    // threw a TypeError partway through and silently abandoned the rest of this
+    // reset — and with it the tail of onTransferCancelled, which calls this.
     const dz=document.getElementById('drop-zone');
-    dz.classList.remove('fade-out'); dz.style.padding=''; dz.style.display='';
-    const qw=document.getElementById('queue-wrap'); qw.style.opacity='1'; qw.classList.remove('visible');
-    document.getElementById('control-panel').classList.remove('visible');
-    document.getElementById('btn-grab').style.display='';
-    document.getElementById('btn-release').style.display='none';
-    document.getElementById('file-overlay').classList.remove('active');
+    if (dz) { dz.classList.remove('fade-out'); dz.style.padding=''; dz.style.display=''; }
+    const qw=document.getElementById('queue-wrap');
+    if (qw) { qw.style.opacity='1'; qw.classList.remove('visible'); }
+    document.getElementById('control-panel')?.classList.remove('visible');
+    const grab=document.getElementById('btn-grab');
+    if (grab) grab.style.display='';
+    document.getElementById('file-overlay')?.classList.remove('active');
     hideCancelConfirm();
-    document.getElementById('transfer-error-screen').classList.remove('visible');
+    document.getElementById('transfer-error-screen')?.classList.remove('visible');
     // Restore hidden progress-screen sub-elements
     const ps = document.getElementById('progress-screen');
-    if(ps.querySelector('.progress-ring-wrap')) ps.querySelector('.progress-ring-wrap').style.display = '';
-    if(ps.querySelector('.progress-meta')) ps.querySelector('.progress-meta').style.display = '';
-    if(ps.querySelector('.progress-file-label')) ps.querySelector('.progress-file-label').style.display = '';
+    if (ps) {
+      ['.progress-ring-wrap', '.progress-meta', '.progress-file-label'].forEach(sel => {
+        const el = ps.querySelector(sel);
+        if (el) el.style.display = '';
+      });
+    }
     window._PS_getETA = null;
   };
 
@@ -3387,11 +3366,11 @@
     // Hide gravity-well idle UI
     document.getElementById('gravity-well-ui').classList.add('hidden');
 
-    // START gravity well NOW — particles get pulled as the file arrives
-    gwLoopActive = false; // reset guard
-    startGravityWellIdle();
+    // Rings radiate inward from the moment FILE_META lands, giving the receiver
+    // an ambient cue that something is incoming — before they press Drop.
+    window.enterTransferVisuals('in');
 
-    // Sphere consumed — show receive progress ring
+    // Show receive progress ring
     showReceiveProgress(filename, totalBytes, batchIndex, batchCount);
   }
 
@@ -3417,12 +3396,13 @@
   }
 
   function completeReceive(filename, totalBytes, url, batchIndex = 0, batchCount = 1) {
+    // Hoisted so the finally block can reach it even if the try throws early.
+    // Rings run continuously across a batch and stop once, after the final file.
+    const isLast = (batchIndex + 1) >= batchCount;
     try {
       if (rxRafId) cancelAnimationFrame(rxRafId);
       document.getElementById('receive-progress').classList.remove('visible');
       if (typeof hideRxCancelConfirm === 'function') hideRxCancelConfirm();
-
-      const isLast = (batchIndex + 1) >= batchCount;
 
       const finalize = () => {
         // Add to files list
@@ -3479,9 +3459,9 @@
     } finally {
       // ALWAYS reset rxTransferActive so subsequent transfers are never blocked
       rxTransferActive = false;
-      if (typeof window.stopGravityWellIdle === 'function') {
-        window.stopGravityWellIdle();
-      }
+      // Exit path 4 of 7 — success (receiver). Only on the last file of a batch,
+      // so mid-batch file boundaries do not restart the rings.
+      if (isLast) window.resetTransferVisuals();
     }
   }
 
@@ -3581,13 +3561,8 @@
     rxTransferActive = false;
     rxProgress = 0;
     rxSpeed = 0;
-    // Clear the ripple canvas in case incoming sphere was mid-flight
-    const rc = document.getElementById('ripple-canvas');
-    if (rc) {
-      const rCtx = rc.getContext('2d');
-      rCtx.clearRect(0, 0, rc.width, rc.height);
-      rc.style.display = 'none';
-    }
+    // Exit path 5 of 7 — receiver animation stop (reached by cancel and errors).
+    window.resetTransferVisuals();
   };
 
   /* ── LEAVE RECEIVER ── */
@@ -3595,12 +3570,11 @@
     if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
     if (incomingSphereRafId) { cancelAnimationFrame(incomingSphereRafId); incomingSphereRafId = null; }
     rxTransferActive = false; rxProgress = 0; rxSpeed = 0;
-    if (typeof window.stopGravityWellIdle === 'function') {
-      window.stopGravityWellIdle();
-    }
+
+    // Exit path 6 of 7 — leave receiver.
+    window.resetTransferVisuals();
 
     // Clear all receiver UI
-    document.getElementById('receive-progress').classList.remove('visible');
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
     document.getElementById('receiver-screen').classList.remove('visible');
@@ -3618,8 +3592,6 @@
     document.getElementById('top-bar-sender-right').style.display = 'none';
     document.getElementById('card-bloom').style.display = '';
     document.getElementById('home-screen').classList.remove('hidden');
-    ParticleSystem.clearGravityWell();
-    ParticleSystem.releaseAll();
     // Ch7: emit leave-room
     if (window._socketLeaveRoom) window._socketLeaveRoom();
   };
@@ -3829,9 +3801,8 @@
   let   errorRetryFn = null;
 
   window.showTransferError = function(title, subtitle, retryFn) {
-    // Hide any in-progress UI
-    document.getElementById('progress-screen').classList.remove('visible');
-    document.getElementById('receive-progress').classList.remove('visible');
+    // Exit path 7 of 7 — error and ICE failure.
+    window.resetTransferVisuals();
 
     errorTitle.textContent = title;
     errorSub.textContent   = subtitle || '';
@@ -3872,6 +3843,9 @@
      PEER DISCONNECT (mid-transfer variant)
   ───────────────────────────────────────────── */
   window.showPeerDisconnected = function(midTransfer) {
+    // Idempotent, so covering both branches costs nothing and guarantees the
+    // rings stop even if the peer drops outside an active transfer.
+    window.resetTransferVisuals();
     if (midTransfer) {
       showTransferError(
         'Peer disconnected.',
