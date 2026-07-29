@@ -2187,46 +2187,74 @@
   function setDigit(i,val){digits_state[i]=val;boxes[i].value=val;boxes[i].classList.toggle('filled',val!=='');}
   function triggerGlobe(i){if(digits_state[i]!=='')activateNode(i,digits_state[i]);}
   function dimGlobe(i){deactivateNode(i);}
+
+  /* ── ERASE: one routine, one normative rule ──
+     A single physical Backspace can reach us three ways: keydown (desktop),
+     beforeinput/deleteContentBackward (Android, where keydown reports keyCode
+     229), and input-with-empty-value (last-resort fallback). Each used to
+     implement erase-and-move-focus independently, and two of those copies
+     encoded opposite focus rules — the mechanism behind six prior regressions.
+
+     Normative rule, one statement of it:
+       box i filled  -> clear i only,    focus STAYS on i
+       box i empty   -> clear i-1 only,  focus MOVES to i-1
+       box 0 empty   -> nothing changes, focus stays
+
+     preventDefault() normally collapses the keydown -> beforeinput -> input
+     chain to a single handler, but IMEs do not reliably honour it, so the
+     guard below is explicit rather than assumed: a fresh keydown opens a new
+     keystroke, and only the first handler to claim it performs the erase. The
+     time window covers IMEs that emit beforeinput with no keydown at all. */
+  let eraseClaimed = false;
+  let lastEraseAt  = 0;
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+  function claimErase(){
+    if (eraseClaimed && (now() - lastEraseAt) < 40) return false; // same keystroke
+    eraseClaimed = true;
+    lastEraseAt  = now();
+    return true;
+  }
+
+  function handleErase(i){
+    if (!claimErase()) return;
+    clearError();
+    if (digits_state[i] !== ''){
+      setDigit(i,''); dimGlobe(i); updateQR();
+      // focus deliberately stays on i
+    } else if (i > 0){
+      setDigit(i-1,''); dimGlobe(i-1); updateQR();
+      boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
+    }
+  }
+
   boxes.forEach((box,i)=>{
     box.addEventListener('keydown',e=>{
+      eraseClaimed = false; // a new keydown is always a new keystroke
       clearError();
       if(e.key==='Backspace' || e.keyCode===8){
         e.preventDefault();
-        if(digits_state[i]!==''){
-          setDigit(i,'');dimGlobe(i);updateQR();
-          if(i>0){
-            boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
-          }
-        }else if(i>0){
-          setDigit(i-1,'');dimGlobe(i-1);updateQR();
-          boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
-        }
+        handleErase(i);
       }
       else if(e.key==='Delete'){
         e.preventDefault();
-        setDigit(i,'');dimGlobe(i);updateQR();
+        // Delete clears this box only and never moves focus.
+        if(digits_state[i]!==''){ setDigit(i,'');dimGlobe(i);updateQR(); }
       }
       else if(e.key==='ArrowLeft'&&i>0){e.preventDefault();boxes[i-1].focus();try{boxes[i-1].select();}catch(_){}}
       else if(e.key==='ArrowRight'&&i<3){e.preventDefault();boxes[i+1].focus();try{boxes[i+1].select();}catch(_){}}
     });
     box.addEventListener('beforeinput',e=>{
       if(e.inputType==='deleteContentBackward'){
-        clearError();
-        if(digits_state[i]!==''){
-          setDigit(i,'');dimGlobe(i);updateQR();
-          if(i>0){
-            boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
-          }
-        }else if(i>0){
-          setDigit(i-1,'');dimGlobe(i-1);updateQR();
-          boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
-        }
+        e.preventDefault();
+        handleErase(i);
       }
     });
     box.addEventListener('input',()=>{
       clearError();const raw=box.value.replace(/\D/g,'');
       if(raw.length>0){
-        if(raw.length>1){
+        if(raw.length>=3){
+          // Genuine multi-character input (SMS autofill) — spread across boxes.
           for(let k=0;k<raw.length&&(i+k)<4;k++){
             setDigit(i+k,raw[k]);triggerGlobe(i+k);
           }
@@ -2234,6 +2262,10 @@
           const nextFocus=Math.min(i+raw.length,3);
           boxes[nextFocus].focus();try{boxes[nextFocus].select();}catch(_){}
         }else{
+          // One digit typed. maxlength="2" lets a filled box briefly hold two
+          // characters when select() did not take, so normalise to the last
+          // one: typing into a filled box replaces it rather than leaking the
+          // extra character into the next box.
           const ch=raw[raw.length-1];
           setDigit(i,ch);triggerGlobe(i);updateQR();
           if(i<3){
@@ -2241,11 +2273,9 @@
             try{ boxes[i+1].select(); }catch(_){}
           }
         }
-      }else if(digits_state[i]!==''){
-        setDigit(i,'');dimGlobe(i);updateQR();
-        if(i>0){
-          boxes[i-1].focus(); try{ boxes[i-1].select(); }catch(_){}
-        }
+      }else{
+        // Value went empty without keydown/beforeinput claiming it.
+        handleErase(i);
       }
     });
     box.addEventListener('paste',e=>{
@@ -2264,12 +2294,34 @@
 
   /* QR */
   let qrInstance=null;
+  /* #qr-placeholder is a CHILD of #qr-output, and rendering a QR wipes that
+     container. Every later call therefore used to dereference a node this
+     function had already destroyed and throw — which is why the OTP focus bug
+     only ever appeared after a full 4-digit code had been entered once: the
+     throw aborted the caller before it could move focus. Recreate the
+     placeholder instead of assuming it survived. */
+  function qrPlaceholder(out){
+    let ph=document.getElementById('qr-placeholder');
+    if(!ph){
+      ph=document.createElement('div');
+      ph.className='qr-placeholder';
+      ph.id='qr-placeholder';
+      ph.textContent='Enter a code above to generate QR';
+      out.appendChild(ph);
+    }
+    return ph;
+  }
   function updateQR(){
-    const code=getCode(),out=document.getElementById('qr-output'),ph=document.getElementById('qr-placeholder');
-    if(code.length<4){if(qrInstance){out.innerHTML='';qrInstance=null;}ph.style.display='';return;}
-    ph.style.display='none';out.innerHTML='';
+    const code=getCode(),out=document.getElementById('qr-output');
+    if(!out) return;
+    if(code.length<4){
+      if(qrInstance){out.innerHTML='';qrInstance=null;}
+      qrPlaceholder(out).style.display='';
+      return;
+    }
+    out.innerHTML='';qrInstance=null;
     try{qrInstance=new QRCode(out,{text:'nexus-spatial:'+code,width:150,height:150,colorDark:'#050505',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});}
-    catch(e){ph.textContent=code;ph.style.display='';}
+    catch(e){const ph=qrPlaceholder(out);ph.textContent=code;ph.style.display='';}
   }
 
   /* QR Scanner */
