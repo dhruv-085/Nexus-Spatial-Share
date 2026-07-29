@@ -19,12 +19,10 @@
 ║           session-end toast, cursor grab, bottom-sheet swipe        ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  KEY GLOBALS (safe to call from console at any time)                ║
-║  ParticleSystem.formSphere(cx,cy,r)   — form sphere at coords       ║
-║  ParticleSystem.explodeSphere(cb)     — burst back to drift         ║
-║  ParticleSystem.setGravityWell(x,y,s) — receiver idle mode          ║
-║  ParticleSystem.clearGravityWell()                                   ║
+║  enterTransferVisuals('out'|'in')     — start transfer rings        ║
+║  resetTransferVisuals()               — stop rings, restore idle    ║
+║  TransferRings.start(mode)/.stop()    — the ring renderer itself    ║
 ║  ParticleSystem.shatterEffect(x,y,'#ef4444')                        ║
-║  ParticleSystem.releaseAll()                                         ║
 ║  Toast.show('msg', 'success'|'error'|'warning'|'info')              ║
 ║  showTransferError(title, subtitle, retryFn)                        ║
 ║  showPeerDisconnected(midTransfer:bool)                              ║
@@ -534,13 +532,6 @@
     }
     .add-more-link:hover { opacity: 1; }
 
-    /* ── SPHERE CANVAS LAYER ── */
-    #sphere-canvas {
-      position: fixed; inset: 0; z-index: 20;
-      pointer-events: none; display: none;
-    }
-    #sphere-canvas.active { display: block; }
-
     /* ── FILE INFO OVERLAY ── */
     #file-overlay {
       position: fixed; z-index: 21;
@@ -749,11 +740,6 @@
     }
     .btn-success-ghost:hover { color: var(--danger); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.25); background: rgba(239,68,68,0.05); }
 
-    /* shockwave ring canvas */
-    #shockwave-canvas {
-      position: fixed; inset: 0; z-index: 22; pointer-events: none; display: none;
-    }
-
     /* ══════════════════════════════════════════════
        CHAPTER 4 — RECEIVER WORKSPACE
     ══════════════════════════════════════════════ */
@@ -853,11 +839,6 @@
       text-align: center;
     }
     #receive-success.visible { opacity: 1; pointer-events: all; }
-
-    /* Ripple rings that radiate outward on success */
-    #ripple-canvas {
-      position: fixed; inset: 0; z-index: 24; pointer-events: none; display: none;
-    }
 
     /* Transfer rings — self-contained layer, never touches the particle field.
        Sits directly beneath the progress ring SVG (z-25) so rings read as
@@ -1700,9 +1681,6 @@
   </div>
 </div>
 
-<!-- SPHERE CANVAS -->
-<canvas id="sphere-canvas"></canvas>
-
 <!-- FILE INFO OVERLAY -->
 <div id="file-overlay">
   <div class="file-overlay-inner">
@@ -1730,9 +1708,6 @@
 </div>
 
 
-
-<!-- SHOCKWAVE CANVAS -->
-<canvas id="shockwave-canvas"></canvas>
 
 <!-- TRANSFER RINGS CANVAS — outward (sending) / inward (receiving) -->
 <canvas id="transfer-rings-canvas"></canvas>
@@ -1837,9 +1812,6 @@
 </div>
 
 <!-- ══ CHAPTER 4 — RECEIVER ══ -->
-
-<!-- RIPPLE CANVAS (success animation) -->
-<canvas id="ripple-canvas"></canvas>
 
 <!-- RECEIVER SCREEN (idle gravity well) -->
 <div id="receiver-screen">
@@ -1976,22 +1948,11 @@
     sphereAngles.push({ phi, theta });
   }
 
-  /* ── OVERLAY CANVAS for progress ring drawn as orbiting particles ── */
-  const ovCanvas = document.getElementById('sphere-canvas');
-  const ovCtx = ovCanvas.getContext('2d');
-  function resizeOv(){ ovCanvas.width=window.innerWidth; ovCanvas.height=window.innerHeight; }
-  resizeOv(); window.addEventListener('resize', resizeOv);
-
-  /* ── STATE ── */
-  let PS_state = 'drift'; // 'drift' | 'sphere'
-  let gravWell = null;
+  /* ── STATE ──
+     Transfer state deliberately does not live here. The particle field is a
+     background only: it drifts and repels on hover, in every app state. The
+     transfer animation owns its own canvas (see CHAPTER 3A). */
   let shatterPs = [];
-  let sphereActive = false;
-  let sphereCX = 0, sphereCY = 0, SPHERE_R = 0;
-  let sphereRotY = 0; // continuous Y-axis rotation
-  let sphereRotX = 0.3; // slight X tilt (axis tilt like a planet)
-  let PS_transferActive = false;
-  let PS_progress = 0;
 
   // ── SPHERE SHATTER — per-particle isShattered flag ──
   // (reference-file approach: simpler boolean flag, smooth reformation via pull physics)
@@ -2013,7 +1974,7 @@
     }
 
     /* ── DRIFT: normal behaviour from Ch1, rainbow repel fully preserved ── */
-    updateDrift(t, gw) {
+    updateDrift(t) {
       if(this.fadeDelay>0){this.fadeDelay--;return;}
       if(this.alpha<1) this.alpha=Math.min(1,this.alpha+0.006);
       const dx=mouse.x-this.x,dy=mouse.y-this.y,dist=Math.sqrt(dx*dx+dy*dy);
@@ -2022,31 +1983,6 @@
       const maxSpd = 2.8;
       if(spd>maxSpd){this.vx=(this.vx/spd)*maxSpd;this.vy=(this.vy/spd)*maxSpd;}
       if(spd>0.45){this.vx*=0.975;this.vy*=0.975;}
-      if(gw){
-        if (gw.isRepeller) {
-          const gx=this.x-gw.x,gy=this.y-gw.y,gd=Math.sqrt(gx*gx+gy*gy)||1;
-          // Symmetrical boundary: same 0.5 * diagonal threshold as attractor center-reset
-          if (gd > Math.max(canvas.width, canvas.height) * 0.5 || this.x < 2 || this.x > canvas.width - 2 || this.y < 2 || this.y > canvas.height - 2) {
-            // Reset to center with low initial drift and fade-in to prevent visual popping/flashing at center
-            this.x = gw.x + (Math.random() - 0.5) * 6;
-            this.y = gw.y + (Math.random() - 0.5) * 6;
-            this.vx = (Math.random() - 0.5) * 0.2;
-            this.vy = (Math.random() - 0.5) * 0.2;
-            this.alpha = 0.25; // Start slightly visible to avoid starting completely dark
-          } else {
-            // Accelerate fade-in for repeller particles (adds to the base 0.006 increment for 0.02 total)
-            if (this.alpha < 1) this.alpha = Math.min(1, this.alpha + 0.014);
-            // Smooth repelling force (0.008 for optimal visual acceleration)
-            const s = gw.strength*60;
-            this.vx += (gx/gd)*s*.008;
-            this.vy += (gy/gd)*s*.008;
-          }
-        } else {
-          const gx=gw.x-this.x,gy=gw.y-this.y,gd=Math.sqrt(gx*gx+gy*gy);
-          if(gd<6){this.x=Math.random()*canvas.width;this.y=Math.random()*canvas.height;this.vx=(Math.random()-.5)*.4;this.vy=(Math.random()-.5)*.4;}
-          else{const s=gw.strength*60;this.vx+=(gx/gd)*s*.012;this.vy+=(gy/gd)*s*.012;}
-        }
-      }
       this.x+=this.vx; this.y+=this.vy;
       if(this.x<0)this.x=canvas.width; if(this.x>canvas.width)this.x=0;
       if(this.y<0)this.y=canvas.height; if(this.y>canvas.height)this.y=0;
@@ -2066,52 +2002,15 @@
   const particles=[];
   for(let i=0;i<COUNT;i++) particles.push(new Particle(true));
 
+  /* The only remaining public surface: a one-shot particle burst used as an
+     error cue. It adds short-lived particles to a separate list and never
+     mutates the drift field's state, so nothing here can be left "stuck". */
   window.ParticleSystem={
-    convergeToPoint(x,y,r,ms){ /* kept for API compat, not used for sphere */ },
-    releaseAll(){
-      PS_state='drift'; sphereActive=false; PS_transferActive=false; PS_progress=0;
-      gravWell=null;
-      ovCanvas.classList.remove('active');
-      ovCtx.clearRect(0,0,ovCanvas.width,ovCanvas.height);
-    },
-    setGravityWell(x,y,s,isRepeller=false){gravWell={x,y,strength:s,isRepeller};},
-    clearGravityWell(){gravWell=null;},
-    isRepeller(){ return (gravWell && gravWell.isRepeller) || false; },
     shatterEffect(x,y,color){
       for(let i=0;i<70;i++){
         const a=Math.random()*Math.PI*2,s=Math.random()*9+2;
         shatterPs.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:.016+Math.random()*.022,size:Math.random()*3+1,color});
       }
-    },
-    /* Form sphere: particles get pulled to shell, rotate continuously */
-    /* Form sphere: compatibility no-op */
-    formSphere(cx, cy, radius){
-      sphereCX=cx; sphereCY=cy; SPHERE_R=radius;
-    },
-    /* Begin transfer: compatibility start */
-    startTransfer(progress_getter, speed_getter){
-      PS_transferActive=true;
-      PS_progress=0;
-      window._PS_getProgress=progress_getter;
-      window._PS_getSpeed=speed_getter;
-    },
-    /* Explode sphere back to drift */
-    explodeSphere(onDone){
-      PS_state='drift'; sphereActive=false;
-      PS_transferActive=false;
-      gravWell=null;
-      ovCanvas.classList.remove('active');
-      ovCtx.clearRect(0,0,ovCanvas.width,ovCanvas.height);
-      // Burst outward from center
-      const cx = sphereCX || CX();
-      const cy = sphereCY || CY();
-      for(const p of particles){
-        const dx=p.x-cx, dy=p.y-cy;
-        const dist=Math.sqrt(dx*dx+dy*dy)||1;
-        const spd=8+Math.random()*14;
-        p.vx=(dx/dist)*spd; p.vy=(dy/dist)*spd;
-      }
-      if(onDone) setTimeout(onDone,600);
     }
   };
 
@@ -2124,7 +2023,7 @@
 
     // Normal drift
     for(const p of particles){
-      p.updateDrift(t, gravWell);
+      p.updateDrift(t);
       p.drawDrift(t);
     }
     for(let i=shatterPs.length-1;i>=0;i--){
@@ -2944,7 +2843,6 @@
     window.resetTransferVisuals();
 
     const finishSuccess = () => {
-      if (window.ParticleSystem) { ParticleSystem.releaseAll(); }
       const count = fileQueue.length || 1;
       const total = fileQueue.reduce((s,f)=>s+(f.size||0),0);
       const metaEl = document.getElementById('success-meta');
@@ -2962,11 +2860,8 @@
       }, 6000);
     };
 
-    if (window.ParticleSystem && typeof window.ParticleSystem.explodeSphere === 'function') {
-      ParticleSystem.explodeSphere(finishSuccess);
-    } else {
-      finishSuccess();
-    }
+    // Synchronous: the success screen must not ride on an animation callback.
+    finishSuccess();
   }
 
   /* ── CANCEL ── */
@@ -3018,9 +2913,6 @@
 
     if (wasReceiver) {
       document.getElementById('gravity-well-ui').classList.remove('hidden');
-      if (typeof window.startGravityWellIdle === 'function') {
-        window.startGravityWellIdle();
-      }
       const isLocked = (typeof window._socketIsLocked === 'function') ? window._socketIsLocked() : false;
       if (isLocked) {
         if (roomCodeText && typeof window.transitionToReceiver === 'function') {
@@ -3097,30 +2989,8 @@
         if (el) el.style.display = '';
       });
     }
-    window._PS_getETA = null;
   };
 
-  /* ── SHOCKWAVE ── */
-  function startShockwave(cx, cy){
-    const sw=document.getElementById('shockwave-canvas');
-    sw.width=window.innerWidth; sw.height=window.innerHeight;
-    sw.style.display='block';
-    const swCtx=sw.getContext('2d'); let prog=0;
-    function step(){
-      prog+=0.024; swCtx.clearRect(0,0,sw.width,sw.height);
-      const maxR=Math.max(window.innerWidth,window.innerHeight)*0.65;
-      for(let i=0;i<3;i++){
-        const off=i*0.11,p=Math.max(0,prog-off); if(p<=0)continue;
-        const r=maxR*p,alpha=Math.max(0,(0.65-i*0.15)-p*1.1);
-        swCtx.beginPath(); swCtx.arc(cx,cy,r,0,Math.PI*2);
-        swCtx.strokeStyle=i===0?'rgba(220,248,255,'+alpha+')':'rgba(6,182,212,'+(alpha*0.7)+')';
-        swCtx.lineWidth=3-i; swCtx.stroke();
-      }
-      if(prog<1) requestAnimationFrame(step);
-      else{swCtx.clearRect(0,0,sw.width,sw.height);sw.style.display='none';}
-    }
-    requestAnimationFrame(step);
-  }
 
 })();
 
@@ -3142,7 +3012,6 @@
   let rxSpeed = 0;            // MB/s
   let rxTransferActive = false;
   let rxRafId = null;
-  let incomingSphereRafId = null; // hoisted from animateIncomingSphere for cancellation
 
   /* ── HELPERS ── */
   function getFileIcon(name) {
@@ -3199,162 +3068,11 @@
     }, 340);
   }
 
-  /* ── GRAVITY WELL: start particle gravity well at center ── */
-  let gwLoopActive = false; // guard: prevent duplicate oscillate loops
-  window.startGravityWellIdle = function startGravityWellIdle() {
-    if (gwLoopActive) return; // already running
-    gwLoopActive = true;
-    let t = 0;
-    function oscillate() {
-      if (!gwLoopActive) return; // stop when externally killed
-      const str = 0.35 + Math.sin(t * 0.018) * 0.06;
-      const isRep = (window.ParticleSystem && window.ParticleSystem.isRepeller()) ? true : false;
-      ParticleSystem.setGravityWell(CX(), CY(), str, isRep);
-      t++;
-      requestAnimationFrame(oscillate);
-    }
-    oscillate();
-  }
-  window.stopGravityWellIdle = function stopGravityWellIdle() {
-    gwLoopActive = false;
-    ParticleSystem.clearGravityWell();
-  }
-
-  /* ── INCOMING SPHERE ANIMATION ── */
-  // Sphere enters from LEFT edge, travels to center with ease-out
-  function animateIncomingSphere(onArrived) {
-    // We use a canvas overlay to draw the traveling sphere
-    const rc = document.getElementById('ripple-canvas');
-    rc.width = window.innerWidth; rc.height = window.innerHeight;
-    rc.style.display = 'block';
-    const rCtx = rc.getContext('2d');
-
-    const startX = -80;
-    const endX = CX();
-    const startY = CY() + 20;
-    const endY = CY();
-    const SPHERE_DRAW_R = window.innerWidth < 768 ? 50 : 80;
-    const DURATION = 1500; // ms
-    const startTime = Date.now();
-
-    function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
-
-    // Use IIFE-scoped incomingSphereRafId so cancel can reach it
-    if (incomingSphereRafId) { cancelAnimationFrame(incomingSphereRafId); incomingSphereRafId = null; }
-    function step() {
-      const elapsed = Date.now() - startTime;
-      const raw = Math.min(elapsed / DURATION, 1);
-      const prog = easeOut(raw);
-
-      rCtx.clearRect(0, 0, rc.width, rc.height);
-
-      const sx = startX + (endX - startX) * prog;
-      const sy = startY + (endY - startY) * prog;
-
-      // Gravity-well strength increases as sphere nears center
-      const gwStr = 0.3 + prog * 0.3;
-      if (!rxTransferActive) ParticleSystem.setGravityWell(CX(), CY(), gwStr);
-
-      // Draw the sphere (glow layers)
-      // Outer halo
-      const outerGrad = rCtx.createRadialGradient(sx, sy, 0, sx, sy, SPHERE_DRAW_R * 2.2);
-      outerGrad.addColorStop(0, `rgba(140,231,255,${0.12 * prog})`);
-      outerGrad.addColorStop(0.5, `rgba(6,182,212,${0.06 * prog})`);
-      outerGrad.addColorStop(1, 'rgba(6,182,212,0)');
-      rCtx.beginPath(); rCtx.arc(sx, sy, SPHERE_DRAW_R * 2.2, 0, Math.PI*2);
-      rCtx.fillStyle = outerGrad; rCtx.fill();
-
-      // Core glow
-      const coreGrad = rCtx.createRadialGradient(sx, sy, 0, sx, sy, SPHERE_DRAW_R);
-      coreGrad.addColorStop(0, `rgba(220,248,255,${0.4 * prog})`);
-      coreGrad.addColorStop(0.4, `rgba(140,231,255,${0.25 * prog})`);
-      coreGrad.addColorStop(1, 'rgba(6,182,212,0)');
-      rCtx.beginPath(); rCtx.arc(sx, sy, SPHERE_DRAW_R, 0, Math.PI*2);
-      rCtx.fillStyle = coreGrad; rCtx.fill();
-
-      // Travelling streak behind sphere (comet tail)
-      const tailLen = Math.max(0, sx - startX) * 0.18;
-      if (tailLen > 4) {
-        const tailGrad = rCtx.createLinearGradient(sx - tailLen, sy, sx, sy);
-        tailGrad.addColorStop(0, 'rgba(6,182,212,0)');
-        tailGrad.addColorStop(1, `rgba(6,182,212,${0.12 * prog})`);
-        rCtx.beginPath();
-        rCtx.moveTo(sx - tailLen, sy - 2);
-        rCtx.lineTo(sx, sy - 1);
-        rCtx.lineTo(sx, sy + 1);
-        rCtx.lineTo(sx - tailLen, sy + 2);
-        rCtx.fillStyle = tailGrad; rCtx.fill();
-      }
-
-      if (raw < 1) {
-        incomingSphereRafId = requestAnimationFrame(step);
-      } else {
-        incomingSphereRafId = null;
-        rCtx.clearRect(0, 0, rc.width, rc.height);
-        rc.style.display = 'none';
-
-        // Sphere consumed — real burst using background particles
-        // 1) Stop gravity oscillation loop
-        gwLoopActive = false;
-        // 2) Spike gravity to maximum — particles rush inward at full speed
-        ParticleSystem.setGravityWell(CX(), CY(), 1.2);
-        // 3) After 120ms (particles have built up inward velocity), abruptly clear the well
-        //    Particles fly outward naturally from built-up momentum — looks exactly like a burst
-        setTimeout(() => {
-          ParticleSystem.clearGravityWell();
-          // 4) Particles now scatter outward on their own momentum — beautiful real burst
-          // After settling, re-engage the gravity well for the receiving phase
-          setTimeout(() => {
-            gwLoopActive = false;
-            startGravityWellIdle();
-          }, 800);
-        }, 120);
-
-        if (onArrived) onArrived();
-      }
-    }
-    incomingSphereRafId = requestAnimationFrame(step);
-  }
-
-  /* ── RIPPLE RINGS ── (3 staggered rings after receive) */
-  function playRipple(onDone) {
-    const rc = document.getElementById('ripple-canvas');
-    rc.width = window.innerWidth; rc.height = window.innerHeight;
-    rc.style.display = 'block';
-    const rCtx = rc.getContext('2d');
-    const maxR = Math.max(window.innerWidth, window.innerHeight) * 0.55;
-    const rings = [
-      { delay: 0,   prog: 0, color: 'rgba(140,231,255,{a})', width: 2 },
-      { delay: 180, prog: 0, color: 'rgba(6,182,212,{a})',   width: 1.5 },
-      { delay: 360, prog: 0, color: 'rgba(59,130,246,{a})',  width: 1 },
-    ];
-    const start = Date.now();
-
-    function step() {
-      const elapsed = Date.now() - start;
-      rCtx.clearRect(0, 0, rc.width, rc.height);
-      let anyAlive = false;
-
-      for (const ring of rings) {
-        const rElapsed = elapsed - ring.delay;
-        if (rElapsed < 0) { anyAlive = true; continue; }
-        ring.prog = Math.min(rElapsed / 900, 1);
-        const r = maxR * ring.prog;
-        const alpha = Math.max(0, 0.7 - ring.prog * 1.1);
-        if (alpha <= 0) continue;
-        anyAlive = true;
-        rCtx.beginPath();
-        rCtx.arc(CX(), CY(), r, 0, Math.PI*2);
-        rCtx.strokeStyle = ring.color.replace('{a}', alpha.toFixed(2));
-        rCtx.lineWidth = ring.width;
-        rCtx.stroke();
-      }
-
-      if (anyAlive) requestAnimationFrame(step);
-      else { rc.style.display = 'none'; if (onDone) onDone(); }
-    }
-    requestAnimationFrame(step);
-  }
+  /* ── GRAVITY WELL, INCOMING SPHERE, RIPPLE — REMOVED ──
+     All three mutated the shared background particle field to signal transfer
+     state, which is exactly the coupling this rework removes. The receiver's
+     idle "waiting" visual is still #gravity-well-ui, whose rings are pure CSS.
+     Inbound transfer is now signalled by TransferRings (see CHAPTER 3A). */
 
   function startReceive(filename, totalBytes, batchIndex, batchCount) {
     if (rxTransferActive) return;
@@ -3445,13 +3163,8 @@
         }
       };
 
-      if (isLast) {
-        // Play 3 ripple rings then show success
-        playRipple(finalize);
-      } else {
-        // No blocking ripple animation, finalize immediately so we don't block the next file's progress UI!
-        finalize();
-      }
+      // Synchronous on every branch: completion must never wait on an animation.
+      finalize();
     } catch (err) {
       console.error('[completeReceive] Error during completion:', err);
     } finally {
@@ -3555,7 +3268,6 @@
    */
   window.stopReceiverAnimation = function() {
     if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
-    if (incomingSphereRafId) { cancelAnimationFrame(incomingSphereRafId); incomingSphereRafId = null; }
     rxTransferActive = false;
     rxProgress = 0;
     rxSpeed = 0;
@@ -3566,7 +3278,6 @@
   /* ── LEAVE RECEIVER ── */
   window.leaveReceiver = function leaveReceiver() {
     if (rxRafId) { cancelAnimationFrame(rxRafId); rxRafId = null; }
-    if (incomingSphereRafId) { cancelAnimationFrame(incomingSphereRafId); incomingSphereRafId = null; }
     rxTransferActive = false; rxProgress = 0; rxSpeed = 0;
 
     // Exit path 6 of 7 — leave receiver.
@@ -3821,7 +3532,7 @@
     } else {
       // Default: reset sender to drop zone
       if (typeof resetSenderUI === 'function') resetSenderUI();
-      ParticleSystem.explodeSphere(() => ParticleSystem.releaseAll());
+      window.resetTransferVisuals();
     }
   });
 
@@ -3832,7 +3543,7 @@
     else if (typeof window.leaveReceiver === 'function') window.leaveReceiver();
     else {
       // Fallback: manual home reset
-      ParticleSystem.releaseAll();
+      window.resetTransferVisuals();
       document.getElementById('home-screen').classList.remove('hidden');
     }
   });
@@ -4216,133 +3927,11 @@
   }
 
   /* ════════════════════════════════════════════
-     4. TOUCH DRAG FOR SPHERE
-     When the sphere is active, touch-drag moves
-     sphereCX/sphereCY with lerp 0.08 (same weight
-     as the mouse). A second tap outside the sphere
-     after 2 s of inactivity drifts it back to centre.
+     4-5. SPHERE TOUCH DRAG + GRAB CURSOR — REMOVED
+     Both existed only to drag and hover the particle
+     sphere. The sphere is gone; the transfer visual is
+     a non-interactive ring layer with pointer-events:none.
   ════════════════════════════════════════════ */
-  (function setupSphereTouchDrag() {
-    let touchActive = false;
-    let touchTargetX = window.innerWidth / 2;
-    let touchTargetY = window.innerHeight / 2;
-    let lastTouchTime = 0;
-    let driftBackTimer = null;
-
-    const canvas = document.getElementById('nexus-canvas');
-
-    function onTouchStart(e) {
-      if (!window.ParticleSystem || window._PS_state !== 'sphere') return;
-      touchActive = true;
-      lastTouchTime = Date.now();
-      clearTimeout(driftBackTimer);
-      touchTargetX = e.touches[0].clientX;
-      touchTargetY = e.touches[0].clientY;
-    }
-
-    function onTouchMove(e) {
-      if (!touchActive) return;
-      lastTouchTime = Date.now();
-      touchTargetX = e.touches[0].clientX;
-      touchTargetY = e.touches[0].clientY;
-    }
-
-    function onTouchEnd() {
-      touchActive = false;
-      // After 2 s of no touch, drift sphere back to centre
-      driftBackTimer = setTimeout(() => {
-        touchTargetX = window.innerWidth / 2;
-        touchTargetY = window.innerHeight / 2;
-      }, 2000);
-    }
-
-    canvas.addEventListener('touchstart', onTouchStart, { passive: true });
-    canvas.addEventListener('touchmove',  onTouchMove,  { passive: true });
-    canvas.addEventListener('touchend',   onTouchEnd,   { passive: true });
-
-    // Each rAF we lerp sphereCX/CY toward touch target (only in sphere mode)
-    // We expose the lerp target for the particle system to read
-    window._sphereTouchTarget = { x: window.innerWidth/2, y: window.innerHeight/2 };
-
-    const LERP = 0.08;
-    function lerpSphereToTouch() {
-      requestAnimationFrame(lerpSphereToTouch);
-      if (!window._isSphereActive) return;
-      window._sphereTouchTarget.x += (touchTargetX - window._sphereTouchTarget.x) * LERP;
-      window._sphereTouchTarget.y += (touchTargetY - window._sphereTouchTarget.y) * LERP;
-
-      // Update the live sphere center that the particle system reads
-      if (typeof window._sphereCXRef === 'object') {
-        window._sphereCXRef.val = window._sphereTouchTarget.x;
-        window._sphereCYRef.val = window._sphereTouchTarget.y;
-      }
-    }
-    lerpSphereToTouch();
-
-    // Patch formSphere to reset touch target to centre each time
-    const origFormSphere = window.ParticleSystem ? window.ParticleSystem.formSphere : null;
-    // Since ParticleSystem may not exist yet (IIFE not run), we wait for it
-    function patchFormSphere() {
-      if (!window.ParticleSystem) { setTimeout(patchFormSphere, 50); return; }
-      const orig = window.ParticleSystem.formSphere;
-      window.ParticleSystem.formSphere = function(cx, cy, radius) {
-        touchTargetX = cx; touchTargetY = cy;
-        window._sphereTouchTarget.x = cx; window._sphereTouchTarget.y = cy;
-        window._isSphereActive = true;
-        clearTimeout(driftBackTimer);
-        orig.call(this, cx, cy, radius);
-      };
-      const origExplode = window.ParticleSystem.explodeSphere;
-      window.ParticleSystem.explodeSphere = function(onDone) {
-        window._isSphereActive = false;
-        origExplode.call(this, onDone);
-      };
-      const origRelease = window.ParticleSystem.releaseAll;
-      window.ParticleSystem.releaseAll = function() {
-        window._isSphereActive = false;
-        origRelease.call(this);
-      };
-    }
-    patchFormSphere();
-  })();
-
-  /* ════════════════════════════════════════════
-     5. CURSOR: grab / grabbing near sphere
-  ════════════════════════════════════════════ */
-  (function setupSphereCursor() {
-    const style = document.createElement('style');
-    style.id = 'ch8-cursor-style';
-    style.textContent = `
-      body.cursor-grab   { cursor: grab !important; }
-      body.cursor-grab * { cursor: grab !important; }
-      body.cursor-grabbing   { cursor: grabbing !important; }
-      body.cursor-grabbing * { cursor: grabbing !important; }
-    `;
-    document.head.appendChild(style);
-
-    let mouseX = -9999, mouseY = -9999;
-    let isDragging = false;
-
-    window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; updateCursor(); });
-    window.addEventListener('mousedown', () => { if (document.body.classList.contains('cursor-grab')) { isDragging = true; document.body.classList.replace('cursor-grab', 'cursor-grabbing'); } });
-    window.addEventListener('mouseup',   () => { isDragging = false; document.body.classList.remove('cursor-grabbing'); updateCursor(); });
-
-    function updateCursor() {
-      if (!window._isSphereActive) { document.body.classList.remove('cursor-grab', 'cursor-grabbing'); return; }
-      if (isDragging) return;
-      // Sphere center is approximately window center when first formed
-      const cx = window._sphereTouchTarget ? window._sphereTouchTarget.x : window.innerWidth / 2;
-      const cy = window._sphereTouchTarget ? window._sphereTouchTarget.y : window.innerHeight / 2;
-      const SR = window.innerWidth < 768 ? 55 : 90;
-      const dx = mouseX - cx, dy = mouseY - cy;
-      const dist = Math.sqrt(dx*dx + dy*dy);
-      if (dist < SR * 2.2) { document.body.classList.add('cursor-grab'); }
-      else { document.body.classList.remove('cursor-grab'); }
-    }
-
-    // Run every 100ms as a light poll so it stays accurate even without mouse movement
-    setInterval(updateCursor, 100);
-  })();
 
   /* ════════════════════════════════════════════
      6. KEYBOARD ACCESSIBILITY
@@ -4475,7 +4064,7 @@
     }
 
     // Hook into the existing transfer complete events
-    // Sender: completeTransfer calls ParticleSystem.explodeSphere, then shows success-screen
+    // Sender: completeTransfer shows the success-screen synchronously.
     // We intercept the success-meta element update
     const successMeta = document.getElementById('success-meta');
     if (successMeta) {
@@ -4546,39 +4135,9 @@
   ════════════════════════════════════════════ */
   (function setupCleanStateReset() {
     function ch8CleanUp() {
-      // Clear sphere cursor state
-      document.body.classList.remove('cursor-grab', 'cursor-grabbing');
-      window._isSphereActive = false;
-
-      // Reset touch targets to centre
-      if (window._sphereTouchTarget) {
-        window._sphereTouchTarget.x = window.innerWidth / 2;
-        window._sphereTouchTarget.y = window.innerHeight / 2;
-      }
-
-      // Ensure overlay canvas is cleared
-      const ov = document.getElementById('sphere-canvas');
-      if (ov) {
-        const octx = ov.getContext('2d');
-        octx.clearRect(0, 0, ov.width, ov.height);
-        ov.classList.remove('active');
-      }
-
-      // Clear any lingering shockwave canvas
-      const sw = document.getElementById('shockwave-canvas');
-      if (sw) {
-        const swCtx = sw.getContext('2d');
-        swCtx.clearRect(0, 0, sw.width, sw.height);
-        sw.style.display = 'none';
-      }
-
-      // Ensure ripple canvas is cleared (receiver)
-      const rc = document.getElementById('ripple-canvas');
-      if (rc) {
-        const rCtx = rc.getContext('2d');
-        rCtx.clearRect(0, 0, rc.width, rc.height);
-        rc.style.display = 'none';
-      }
+      // Transfer visuals are owned by resetTransferVisuals(); call it here as a
+      // belt-and-braces safety net on the leave buttons.
+      if (typeof window.resetTransferVisuals === 'function') window.resetTransferVisuals();
 
       // Reset any aria-modal locks
       const panel = document.getElementById('files-panel');
@@ -4655,19 +4214,7 @@
     window.addEventListener('resize', () => {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
-        // Re-centre touch target on resize
-        if (window._sphereTouchTarget && !window._isSphereActive) {
-          window._sphereTouchTarget.x = window.innerWidth / 2;
-          window._sphereTouchTarget.y = window.innerHeight / 2;
-        }
-        // Resize overlay canvases
-        ['sphere-canvas', 'shockwave-canvas', 'ripple-canvas'].forEach(id => {
-          const c = document.getElementById(id);
-          if (c && c.style.display !== 'none') {
-            c.width  = window.innerWidth;
-            c.height = window.innerHeight;
-          }
-        });
+        // #transfer-rings-canvas resizes itself from its own RAF loop.
       }, 120);
     });
   })();
