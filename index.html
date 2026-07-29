@@ -468,7 +468,6 @@
     }
     #drop-zone.dragover .drop-main-text { opacity: 0; }
     #drop-zone.dragover .drop-release-text { opacity: 1; }
-    #drop-zone.fade-out { opacity: 0; transform: scale(0.96); pointer-events: none; }
 
     .drop-icon { color: rgba(6,182,212,0.5); margin-bottom: 4px; }
     .drop-icon svg { width: 40px; height: 40px; }
@@ -2860,9 +2859,8 @@
     isTransferring = true;
     currentProgress = 0; currentSpeed = 0;
 
-    // Fade UI
-    document.getElementById('drop-zone').classList.add('fade-out');
-    const qw=document.getElementById('queue-wrap'); qw.style.opacity='0'; qw.style.transition='opacity 0.3s';
+    // The drop zone and queue are removed from layout by body.transferring,
+    // which enterTransferVisuals() adds below — no per-element fading here.
     document.getElementById('control-panel').classList.remove('visible');
 
     // Rings radiate outward for the duration of the send.
@@ -3082,9 +3080,9 @@
     // threw a TypeError partway through and silently abandoned the rest of this
     // reset — and with it the tail of onTransferCancelled, which calls this.
     const dz=document.getElementById('drop-zone');
-    if (dz) { dz.classList.remove('fade-out'); dz.style.padding=''; dz.style.display=''; }
+    if (dz) { dz.style.padding=''; dz.style.display=''; }
     const qw=document.getElementById('queue-wrap');
-    if (qw) { qw.style.opacity='1'; qw.classList.remove('visible'); }
+    if (qw) qw.classList.remove('visible');
     document.getElementById('control-panel')?.classList.remove('visible');
     const grab=document.getElementById('btn-grab');
     if (grab) grab.style.display='';
