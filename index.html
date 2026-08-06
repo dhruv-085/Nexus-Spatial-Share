@@ -2514,14 +2514,29 @@
   let mode = null;          // 'out' | 'in' | null
   let lastSpawnAt = 0;
 
-  const reducedMotion = () =>
-    window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Queried once: a MediaQueryList stays live, so `.matches` tracks the setting
+  // without allocating a new object on every frame.
+  const motionQuery = window.matchMedia
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : null;
+  const reducedMotion = () => !!motionQuery && motionQuery.matches;
 
   const lerp = (a, b, t) => a + (b - a) * t;
+  const rgba = (c, alpha) =>
+    'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + alpha.toFixed(3) + ')';
   const mixRGBA = (from, to, t, alpha) =>
-    'rgba(' + Math.round(lerp(from[0], to[0], t)) + ',' +
-              Math.round(lerp(from[1], to[1], t)) + ',' +
-              Math.round(lerp(from[2], to[2], t)) + ',' + alpha.toFixed(3) + ')';
+    rgba([Math.round(lerp(from[0], to[0], t)),
+          Math.round(lerp(from[1], to[1], t)),
+          Math.round(lerp(from[2], to[2], t))], alpha);
+
+  /**
+   * Radius of a ring at normalised age `t`, for the given mode. Shared by the
+   * renderer and _debug() so the regression sweep measures the same curve the
+   * screen draws — they used to carry separate copies of this easing.
+   */
+  const ringRadius = (ringMode, t, r0) => ringMode === 'out'
+    ? r0 + TRAVEL_PX * (1 - Math.pow(1 - t, 3))   // ease-out: fast, then settle
+    : r0 + TRAVEL_PX * (1 - Math.pow(t, 2));      // ease-in: accelerate inward
 
   /**
    * Resolve the emit origin from the live DOM every frame, so the rings stay
@@ -2534,10 +2549,8 @@
       document.querySelector('#receive-progress.visible .progress-ring-wrap') ||
       // Fall back to whichever wrap is actually laid out, in case the overlay's
       // .visible class lands a frame later than the animation start.
-      Array.prototype.find.call(
-        document.querySelectorAll('.progress-ring-wrap'),
-        el => el.offsetParent !== null
-      );
+      Array.from(document.querySelectorAll('.progress-ring-wrap'))
+        .find(el => el.offsetParent !== null);
 
     if (!wrap) {
       // Nothing rendered yet — centre of viewport at the default 180px geometry.
@@ -2561,7 +2574,8 @@
     rafId = requestAnimationFrame(drawFrame);
 
     // Skip the work, not the loop, while backgrounded (matches the CPU fix in
-    // code_debugged.md #41). stop() is never reachable only through this loop.
+    // code_debugged.md #41). Teardown never depends on this loop reaching a
+    // particular branch: stop() cancels the frame itself (KTD3).
     if (document.visibilityState === 'hidden') return;
     if (!ctx || !mode) return;
 
@@ -2578,7 +2592,7 @@
       const c = mode === 'out' ? OUT_FROM : IN_FROM;
       ctx.beginPath();
       ctx.arc(origin.x, origin.y, origin.r0 + 6, 0, Math.PI * 2);
-      ctx.strokeStyle = mixRGBA(c, c, 0, 0.32);
+      ctx.strokeStyle = rgba(c, 0.32);
       ctx.lineWidth = 1.5;
       ctx.stroke();
       return;
@@ -2596,18 +2610,15 @@
       const t = (now - rings[i].born) / LIFE_MS;
       if (t >= 1) { rings.splice(i, 1); continue; }
 
-      let radius, alpha, width;
+      const radius = ringRadius(mode, t, origin.r0);
+      let alpha, width;
       if (mode === 'out') {
-        const eased = 1 - Math.pow(1 - t, 3);            // ease-out: fast, then settle
-        radius = origin.r0 + TRAVEL_PX * eased;
-        alpha  = 0.45 * (1 - t);                          // 0.45 → 0
-        width  = lerp(2, 0.75, t);
+        alpha = 0.45 * (1 - t);                           // 0.45 → 0
+        width = lerp(2, 0.75, t);
       } else {
-        const eased = Math.pow(t, 2);                     // ease-in: accelerate inward
-        radius = origin.r0 + TRAVEL_PX * (1 - eased);
         // Fade in, peak, then fade to near-zero so the ring does not pop at the edge.
-        alpha  = t < 0.25 ? 0.45 * (t / 0.25) : lerp(0.45, 0.03, (t - 0.25) / 0.75);
-        width  = lerp(0.75, 2, t);
+        alpha = t < 0.25 ? 0.45 * (t / 0.25) : lerp(0.45, 0.03, (t - 0.25) / 0.75);
+        width = lerp(0.75, 2, t);
       }
 
       if (alpha <= 0 || radius <= 0) continue;
@@ -2651,12 +2662,8 @@
       return {
         mode, rafId, count: rings.length,
         r0: origin.r0,
-        radii: rings.map(ring => {
-          const t = Math.min((now - ring.born) / LIFE_MS, 1);
-          return mode === 'out'
-            ? origin.r0 + TRAVEL_PX * (1 - Math.pow(1 - t, 3))
-            : origin.r0 + TRAVEL_PX * (1 - Math.pow(t, 2));
-        })
+        radii: rings.map(ring =>
+          ringRadius(mode, Math.min((now - ring.born) / LIFE_MS, 1), origin.r0))
       };
     }
   };
