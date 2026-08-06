@@ -2913,7 +2913,11 @@
 
       // Auto-dismiss sender success modal after 6s (matching receiver dismissSuccess behavior)
       setTimeout(() => {
-        if (document.getElementById('success-screen').classList.contains('visible')) {
+        // Re-read rather than closing over `ss`: this fires 6s later, and an
+        // unguarded lookup in a timer is the exact shape that stranded the two
+        // teardown bugs this branch fixes.
+        const late = document.getElementById('success-screen');
+        if (late && late.classList.contains('visible')) {
           sendAnotherFile();
         }
       }, 6000);

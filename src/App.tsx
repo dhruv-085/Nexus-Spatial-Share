@@ -2063,7 +2063,12 @@ export default function App() {
       delete (window as any)._socketCreateRoom;
       delete (window as any).onFilesSelected;
       delete (window as any).sendFilesViaWebRTC;
-      delete (window as any)._completeTransferCh3;
+      // _completeTransferCh3 is deliberately NOT deleted here: index.html sets
+      // it once at parse time and this effect never re-creates it, so deleting
+      // it on cleanup removed it permanently. Under StrictMode's
+      // mount/cleanup/mount cycle that killed the sender's success path — no
+      // success screen and, since this branch, no resetTransferVisuals() either,
+      // leaving the transfer rings running forever after a successful send.
       delete (window as any)._socketLeaveRoom;
       delete (window as any)._socketCancelTransfer;
     };

@@ -113,8 +113,49 @@ function assertIdle(name, state, errors) {
     assertIdle(`${label} :: returns to clean idle`, await idleState(page), errors);
   }
 
-  await exitVia('sender success (completeTransfer)', 'out',
-    () => { if (window.completeTransfer) window.completeTransfer(); else window.resetTransferVisuals(); });
+  // The sender's completion is reached only through _completeTransferCh3 — the
+  // bridge index.html exposes for App.tsx's 'eof' handler. An earlier version of
+  // this sweep called window.completeTransfer, which does not exist, and its
+  // `else` fell through to a bare resetTransferVisuals(): the most important
+  // exit path was passing without ever running. Fail loudly instead.
+  record(
+    'sender completion bridge (_completeTransferCh3) is present',
+    await page.evaluate(() => typeof window._completeTransferCh3 === 'function'),
+    'window._completeTransferCh3 is missing — the sender success path is unreachable'
+  );
+
+  await exitVia('sender success (_completeTransferCh3)', 'out',
+    () => window._completeTransferCh3());
+
+  // The success screens are shown right next to a resetTransferVisuals() call —
+  // before it on the sender, after it on the receiver — and that reset hides
+  // #progress-screen / #receive-progress. They survive today only because both
+  // success screens are body-level siblings rather than children of the
+  // overlays. Nothing else asserts that, so a future reparent would kill the
+  // success feedback while every idle assertion above still passed.
+  record(
+    'sender success :: the success screen survives the teardown before it',
+    await page.evaluate(() =>
+      document.getElementById('success-screen').classList.contains('visible')),
+    'success screen was not visible after completeTransfer()'
+  );
+  await page.evaluate(() => {
+    document.getElementById('success-screen').classList.remove('visible');
+  });
+
+  const successNesting = await page.evaluate(() => {
+    const ps = document.getElementById('progress-screen');
+    const rp = document.getElementById('receive-progress');
+    return {
+      senderDetached: !ps.contains(document.getElementById('success-screen')),
+      receiverDetached: !rp.contains(document.getElementById('receive-success')),
+    };
+  });
+  record(
+    'success screens live outside the overlays resetTransferVisuals() hides',
+    successNesting.senderDetached && successNesting.receiverDetached,
+    JSON.stringify(successNesting)
+  );
 
   await exitVia('cancel (onTransferCancelled)', 'out',
     () => window.onTransferCancelled());
