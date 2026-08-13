@@ -359,6 +359,46 @@ export class TransferEngine {
     this.pumpWindow();
   }
 
+  // U3 (R1/R2/R3): re-seed an in-flight send from a receiver-published manifest.
+  // Unlike startTransfer() it does not re-open the file or reset telemetry
+  // baselines; it re-seeds ackedChunks, clears in-flight slots, drops prefetched
+  // packets the manifest now marks acknowledged, and restarts the pump from the
+  // first unacknowledged chunk. The receiver is the sole authority on progress,
+  // so covered chunks are simply skipped, never re-read from disk. A no-op when
+  // nothing is sending (receiver engine, idle, or cancelled).
+  public resumeTransfer(manifest: number[]): void {
+    if (!this.isSending || this.isCanceled || !this.file) return;
+
+    this.ackedChunks = new Set(manifest);
+    this.inFlight.clear();
+
+    if (this.ackedChunks.size > 0) {
+      this.ackedChunks.forEach(idx => this.packetCache.delete(idx));
+    }
+
+    let next = 0;
+    while (next < this.totalChunks && this.ackedChunks.has(next)) next++;
+    this.nextChunkIndex = next;
+
+    this.backpressurePaused = false;
+    this.backpressurePausedSince = 0;
+
+    // U3 (AE1): never let the progress ring jump backwards after a resume.
+    this.bytesTransferred = Math.max(this.bytesTransferred, this.ackedChunks.size * CHUNK_SIZE);
+
+    // Refresh the ACK clock so the stale-backpressure / inFlight-deadlock
+    // watchdog paths do not fire on the first tick after a resume.
+    this.lastAckReceivedAt = Date.now();
+
+    if (this.ackedChunks.size >= this.totalChunks) {
+      this.finishTransfer();
+      return;
+    }
+
+    this.pumpWindow();
+    this.prefetchBatch();
+  }
+
   private async prefetchBatch() {
     if (!this.file || this.isCanceled || this.isPrefetching) return;
     this.isPrefetching = true;
@@ -724,7 +764,27 @@ export class TransferEngine {
     }
   }
 
+  // U2 (R4): can the receiver still produce every chunk its manifest claims?
+  // Conjunction, not a choice:
+  //  - fileMeta is non-null (an initialized receiver),
+  //  - every chunk in receivedChunks ABOVE lastFlushedIndex is still non-null in
+  //    receiveChunksArray — those live only in RAM,
+  //  - either nothing has been flushed yet (lastFlushedIndex < 0) or the stream
+  //    writer is still live, because flushed chunks were nulled out of RAM and
+  //    exist only on disk.
+  public canProduceManifest(): boolean {
+    if (!this.fileMeta) return false;
+    for (let i = this.lastFlushedIndex + 1; i < this.fileMeta.totalChunks; i++) {
+      if (this.receivedChunks.has(i) && this.receiveChunksArray[i] == null) {
+        return false;
+      }
+    }
+    if (this.lastFlushedIndex >= 0 && !this.streamWriter) return false;
+    return true;
+  }
+
   public getReceivedManifest(): number[] {
+    if (!this.canProduceManifest()) return [];
     return Array.from(this.receivedChunks);
   }
 

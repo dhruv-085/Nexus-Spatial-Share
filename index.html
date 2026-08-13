@@ -2745,7 +2745,13 @@
     document.getElementById('receiver-screen').classList.remove('visible');
     window.updatePanelToggle?.();
     document.getElementById('rx-dev-panel')?.classList.remove('visible');
-    document.getElementById('progress-screen').classList.remove('visible');
+    // Do not tear down the in-flight progress overlay on a mid-transfer rejoin
+    // (the source socket reconnecting after backgrounding). Removing it here
+    // stranded the source with a running transfer but no cancel button or
+    // progress ring — only resetTransferVisuals is allowed to clear it.
+    if (!isTransferring) {
+      document.getElementById('progress-screen').classList.remove('visible');
+    }
     document.getElementById('success-screen').classList.remove('visible');
     document.getElementById('receive-progress').classList.remove('visible');
     document.getElementById('receive-success').classList.remove('visible');

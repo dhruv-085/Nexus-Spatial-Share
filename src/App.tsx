@@ -79,6 +79,13 @@ export default function App() {
   // Watchdog: if ICE stays in 'checking' for 10s without connecting, force a rejoin
   const iceWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingStartTransferRef = useRef<{ file: File, resumeManifest: number[] } | null>(null);
+  // U2 (KTD3): per-transfer id minted by the sender when it builds FILE_META and
+  // echoed in every resume message, so a resume can never re-seed the wrong
+  // transfer after a cancel-and-restart. Never persisted.
+  const transferIdRef = useRef<string | null>(null);
+  const incomingTransferIdRef = useRef<string | null>(null);
+  // U2/U3: receiver-published progress waiting for the sender to re-arm against it.
+  const resumeManifestRef = useRef<number[]>([]);
   // isGestureDropRef removed — handleDropAction no longer distinguishes gesture vs button
 
   const clientIdRef = useRef<string>("");
@@ -208,12 +215,19 @@ export default function App() {
 
         if (isTransferringRef.current) {
           (window as any).Toast?.show?.('Resuming file transfer from pause point...', 'info');
-          if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && transferRequestedRef.current && transferEngineRef.current) {
-            const openCtrl = controlConnRef.current.filter(c => c.readyState === 'open');
-            if (openCtrl.length > 0) {
+          const openCtrl = controlConnRef.current.filter(c => c.readyState === 'open');
+          if (openCtrl.length > 0) {
+            if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && transferRequestedRef.current && transferEngineRef.current) {
               const resumeManifest = transferEngineRef.current.getReceivedManifest();
               console.log(`[Visibility] Auto-sending START_TRANSFER with ${resumeManifest.length} existing chunks`);
               openCtrl.forEach(c => c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest })));
+            } else if (isSourceRef.current && transferIdRef.current) {
+              // U4 (R1/R2): this peer is the sender returning to the foreground.
+              // The receiver is the authority on progress, so probe it for its
+              // manifest; the RESUME_MANIFEST reply re-arms the engine (U3).
+              const req = JSON.stringify({ type: "RESUME_REQUEST", transferId: transferIdRef.current });
+              console.log(`[Visibility] Auto-sending RESUME_REQUEST for ${transferIdRef.current}`);
+              openCtrl.forEach(c => c.send(req));
             }
           }
         }
@@ -410,6 +424,10 @@ export default function App() {
           if (openCtrl.length > 0) {
             const meta = JSON.stringify({
               type: 'FILE_META',
+              // U2: reuse the transferId minted for this file (KTD2). Omitting it
+              // here corrupted the receiver's incomingTransferIdRef to null,
+              // making the RESUME_REQUEST below be ignored as "unknown".
+              transferId: transferIdRef.current ?? mintTransferId(),
               file: {
                 name: currentFile.name,
                 type: currentFile.type,
@@ -682,6 +700,12 @@ export default function App() {
     return files[idx];
   }, []);
 
+  const mintTransferId = () => {
+    const id = `tid_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    transferIdRef.current = id;
+    return id;
+  };
+
   const handleGrabAction = async () => {
     const fileToSend = getCurrentFile();
     if (!fileToSend) {
@@ -714,6 +738,7 @@ export default function App() {
       console.log(`CONSOLE: handleGrabAction — control channels: ${controlConnRef.current.length} total, ${openCtrl.length} open | data channels: ${connRef.current.length} total, ${openData.length} open`);
 
       if (openCtrl.length > 0) {
+        const transferId = mintTransferId();
         const fileMeta = {
           name: fileToSend.name,
           type: fileToSend.type,
@@ -723,7 +748,7 @@ export default function App() {
           batchIndex: currentFileIndexRef.current,
           batchCount: selectedFilesRef.current.length
         };
-        openCtrl.forEach(c => c.send(JSON.stringify({ type: "FILE_META", file: fileMeta })));
+        openCtrl.forEach(c => c.send(JSON.stringify({ type: "FILE_META", transferId, file: fileMeta })));
         setMessages((prev) => [...prev, `SYSTEM: Grabbed "${fileToSend.name}" (${fileNum}/${totalFiles}). FILE_META sent. Waiting for receiver to drop...`]);
         console.log(`CONSOLE: FILE_META sent for "${fileToSend.name}"`);
       } else {
@@ -1279,6 +1304,10 @@ export default function App() {
           console.log("CONSOLE: Resending FILE_META on channel open (iAmSender check: isSourceRef=", isSourceRef.current, "hasFile=", !!currentFile, "isGlobalLocked=", isGlobalLockedRef.current, ")");
           const metaPayload = JSON.stringify({
             type: "FILE_META",
+            // U2: reuse the minted transferId instead of minting a fresh one per
+            // resend — otherwise sender and receiver can disagree on the id and
+            // the resume handshake is refused as "unknown transferId" (KTD2).
+            transferId: transferIdRef.current ?? mintTransferId(),
             file: {
               name: currentFile.name,
               type: currentFile.type,
@@ -1299,6 +1328,7 @@ export default function App() {
           console.log("CONSOLE: Channels opened with file selected but room not locked yet — sending FILE_META proactively");
           const metaPayload = JSON.stringify({
             type: "FILE_META",
+            transferId: transferIdRef.current ?? mintTransferId(),
             file: {
               name: currentFile.name,
               type: currentFile.type,
@@ -1323,6 +1353,16 @@ export default function App() {
             if (c.readyState === 'open') {
               c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest }));
             }
+          });
+        } else if (isSourceRef.current && transferIdRef.current && isTransferringRef.current) {
+          // U4 (R1/R2): the sender's channels re-established mid-transfer (e.g.
+          // after a backgrounding that dropped WebRTC). The receiver is the
+          // authority on progress, so probe it for its manifest — the
+          // RESUME_MANIFEST reply re-arms the sender engine (U3).
+          console.log(`CONSOLE: Channels reopened mid-transfer — sending RESUME_REQUEST for ${transferIdRef.current}`);
+          const req = JSON.stringify({ type: "RESUME_REQUEST", transferId: transferIdRef.current });
+          controlConnRef.current.forEach(c => {
+            if (c.readyState === 'open') c.send(req);
           });
         }
         if (pendingStartTransferRef.current && connRef.current.some(c => c.readyState === 'open')) {
@@ -1423,6 +1463,7 @@ export default function App() {
             console.log("CONSOLE: Received FILE_META:", payload.file);
             incomingFileRef.current = payload.file;
             setIncomingFile(payload.file);
+            incomingTransferIdRef.current = payload.transferId ?? null;
 
             const prevEngine = transferEngineRef.current;
             if (prevEngine) {
@@ -1534,6 +1575,38 @@ export default function App() {
               setMessages(prev => [...prev, "ERROR: Received START_TRANSFER but no file is selected (selectedFiles is empty)."]);
             }
 
+          } else if (payload.type === "RESUME_REQUEST") {
+            // U2 (KTD2): the sender asks the receiver for its current manifest.
+            // The receiver is the sole authority on progress; it replies from
+            // getReceivedManifest(), which returns [] when it can no longer
+            // produce its chunks (R4), forcing a restart from 0 instead of a
+            // corrupt file. A stale/unknown transferId is ignored (AE2).
+            if (incomingTransferIdRef.current && payload.transferId === incomingTransferIdRef.current) {
+              const manifest = transferEngineRef.current?.getReceivedManifest() ?? [];
+              console.log(`[Visibility] Sending RESUME_MANIFEST for ${manifest.length} chunks`);
+              const reply = JSON.stringify({ type: "RESUME_MANIFEST", transferId: payload.transferId, manifest });
+              controlConnRef.current.filter(c => c.readyState === 'open').forEach(c => c.send(reply));
+            } else {
+              console.log("[Visibility] Ignoring RESUME_REQUEST with unknown transferId", payload.transferId);
+            }
+
+          } else if (payload.type === "RESUME_MANIFEST") {
+            // U2: receiver-published progress. U3 re-arms the sender from it;
+            // here the transferId is matched so a stale manifest from a previous
+            // cancelled transfer can never re-seed the current one (KTD3/AE2).
+            if (isSourceRef.current && transferIdRef.current && payload.transferId === transferIdRef.current && isTransferringRef.current) {
+              const manifest: number[] = Array.isArray(payload.manifest) ? payload.manifest : [];
+              console.log(`[Visibility] Received RESUME_MANIFEST with ${manifest.length} chunks`);
+              resumeManifestRef.current = manifest;
+              const engine = transferEngineRef.current;
+              if (engine) {
+                console.log(`[Visibility] Re-arming sender engine from manifest (${manifest.length} chunks)`);
+                engine.resumeTransfer(manifest);
+              }
+            } else {
+              console.log("[Visibility] Ignoring RESUME_MANIFEST (unknown transferId or not the sender)", payload.transferId);
+            }
+
           } else if (payload.type === "CANCEL_TRANSFER") {
             console.log("CONSOLE: Received CANCEL_TRANSFER from peer.");
             if (transferEngineRef.current) {
@@ -1597,6 +1670,7 @@ export default function App() {
               controlConnRef.current.filter(c => c.readyState === 'open').forEach(c => {
                 c.send(JSON.stringify({
                   type: "FILE_META",
+                  transferId: mintTransferId(),
                   file: {
                     name: nextFile.name,
                     type: nextFile.type,
@@ -1636,6 +1710,7 @@ export default function App() {
             if (currentFile) {
               const meta = JSON.stringify({
                 type: "FILE_META",
+                transferId: transferIdRef.current ?? mintTransferId(),
                 file: {
                   name: currentFile.name,
                   type: currentFile.type,
@@ -2070,6 +2145,18 @@ export default function App() {
       cancelTransfer();
     };
 
+    // U2: debug/probe trigger for the resume handshake. U4 replaces manual
+    // console driving with the real visibility returning-to-foreground logic.
+    (window as any)._socketDebugResumeRequest = () => {
+      if (!transferIdRef.current || !isTransferringRef.current) {
+        console.warn("[Visibility] Debug resume: no in-flight transfer to probe");
+        return;
+      }
+      const req = JSON.stringify({ type: "RESUME_REQUEST", transferId: transferIdRef.current });
+      controlConnRef.current.filter(c => c.readyState === 'open').forEach(c => c.send(req));
+      console.log(`[Visibility] Debug resume: sent RESUME_REQUEST for ${transferIdRef.current}`);
+    };
+
     return () => {
       btnGrab?.removeEventListener('click', handleBtnGrabClick);
       btnDrop?.removeEventListener('click', handleBtnDropClick);
@@ -2093,6 +2180,7 @@ export default function App() {
       // leaving the transfer rings running forever after a successful send.
       delete (window as any)._socketLeaveRoom;
       delete (window as any)._socketCancelTransfer;
+      delete (window as any)._socketDebugResumeRequest;
     };
 
 
