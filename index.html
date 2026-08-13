@@ -2687,6 +2687,18 @@
     if (rp) rp.classList.remove('visible');
   };
 
+  // U1 — transfer phase bridge. React publishes exactly one value describing
+  // whether a transfer is in flight, and this owner records it for the escape
+  // hatch. `stalled` is unreachable until U5 but is part of the published set
+  // from day one so neither unit blocks the other.
+  let transferPhase = 'idle';
+  window.setTransferPhase = function setTransferPhase(phase) {
+    transferPhase = phase;
+  };
+  window.getTransferPhase = function getTransferPhase() {
+    return transferPhase;
+  };
+
 })();
 
 /* ═══════════════════════════════════════════════

@@ -25,6 +25,10 @@ export default function App() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [transferProgress, setTransferProgress] = useState(0);
   const [isTransferring, setIsTransferring] = useState(false);
+  // Stalled-flag writer is U5; until then it stays false and `stalled` is
+  // unreachable. The phase bridge reads this alongside isTransferring and the
+  // transfer-requested ref, so a real stall can flip the published phase.
+  const [isTransferStalled, setIsTransferStalled] = useState(false);
   const [telemetry, setTelemetry] = useState<TransferTelemetry | null>(null);
   const transferEngineRef = useRef<TransferEngine | null>(null);
   const [incomingFile, setIncomingFile] = useState<{ name: string, type: string, size: number } | null>(null);
@@ -1923,6 +1927,24 @@ export default function App() {
         (window as any).updateReceiverProgress?.(transferProgress / 100, telemetry?.speedMBps ?? 0);
     }
   }, [isTransferring, isSource, transferProgress, telemetry, currentFileIndex, selectedFiles]);
+
+  // U1 — the transfer phase bridge (R9/R11). One authoritative value from React
+  // to the DOM layer so the escape hatch can stop inferring state from screen
+  // visibility. `stalled` stays unreachable until U5 writes isTransferStalled;
+  // `requested` (receiver dropped, no chunk yet) vs `active` is decided by
+  // whether the engine has reported at least one chunk / ACK. Depend on the
+  // string so a re-render with unchanged inputs does not re-fire the bridge.
+  const transferPhase: 'idle' | 'requested' | 'active' | 'stalled' = isTransferStalled
+    ? 'stalled'
+    : !isTransferring
+      ? 'idle'
+      : transferRequestedRef.current && !(telemetry && telemetry.chunksSent > 0)
+        ? 'requested'
+        : 'active';
+
+  useEffect(() => {
+    window.setTransferPhase?.(transferPhase);
+  }, [transferPhase]);
 
   useEffect(() => {
     if (cameraError) (window as any).showCameraDeniedBanner?.();

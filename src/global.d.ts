@@ -20,6 +20,8 @@ declare global {
     updateGrabButtonState?: (hasFiles: boolean, isGlobalLocked: boolean, isSource: boolean) => void;
     updateDropButtonState?: (hasIncomingFile: boolean, isGlobalLocked: boolean, isSource: boolean, isGrabbedPermanent: boolean) => void;
     updateReceiverProgress?: (progress: number, speedMbps: number) => void;
+    setTransferPhase?: (phase: 'idle' | 'requested' | 'active' | 'stalled') => void;
+    getTransferPhase?: () => 'idle' | 'requested' | 'active' | 'stalled';
     showCameraDeniedBanner?: () => void;
     showSignalingError?: () => void;
     _socketIsConnected?: () => boolean;
