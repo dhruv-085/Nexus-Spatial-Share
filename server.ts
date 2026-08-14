@@ -297,8 +297,11 @@ async function startServer() {
       }
 
       // Clear any lock/offerer state owned by the departing socket so the room
-      // can be re-locked / re-negotiated after the peer reconnects.
-      if (room.sourceId === socket.id) {
+      // can be re-locked / re-negotiated after the peer reconnects. A lock only
+      // means anything while both peers are present, so it also clears when a
+      // real departure leaves fewer than two peers (whoever owned it) — letting
+      // the surviving peer re-grab when the room refills.
+      if (room.sourceId === socket.id || room.peers.length < 2) {
         room.isLocked = false;
         room.sourceId = null;
       }

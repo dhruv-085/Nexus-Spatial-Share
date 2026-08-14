@@ -160,6 +160,39 @@ const hasWaitingAfter = (c, before) =>
       record('R2 completed without internal error', false, String((err && err.message) || err));
     }
 
+    // ── R4: a non-source departure clears the lock so the source can re-grab ─
+    try {
+      const r4 = String(Math.floor(1000 + Math.random() * 9000));
+      const S = track(await connect());
+      await join(S, r4, 'sender');
+      await waitFor(() => S.recv.status.some((s) => s.status === 'waiting'), 'R4 S waiting');
+      const T = track(await connect());
+      await join(T, r4, 'recv');
+      await waitFor(() => readyCount(T) >= 1, 'R4 T ready');
+      await waitFor(() => readyCount(S) >= 1, 'R4 S ready');
+
+      S.s.emit('grabbed', r4); // source grabs
+      await waitFor(() => lockCount(S) > 0 && lockCount(T) > 0, 'R4 global-lock to both');
+      record('R4: source grab locks room for both peers', true);
+
+      T.s.disconnect(); // receiver (non-source) departs for real
+      await waitFor(() => S.recv.peerDisconnected > 0, 'R4 S notified of departure');
+      record('R4: non-source departure notifies remaining peer', S.recv.peerDisconnected > 0);
+
+      // Source re-grabs once the peer is gone — lock must have been cleared even
+      // though the departing socket was not the owner.
+      const sLocksBefore = lockCount(S);
+      S.s.emit('grabbed', r4);
+      await waitFor(() => lockCount(S) > sLocksBefore, 'R4 S re-grab locks after peer left');
+      record(
+        'R4: lock cleared on any departure (not just owner) so source can re-grab',
+        lockCount(S) > sLocksBefore,
+        `S globalLock count=${lockCount(S)}`
+      );
+    } catch (err) {
+      record('R4 completed without internal error', false, String((err && err.message) || err));
+    }
+
     // ── R3: same-socket rejoin re-broadcasts ready to the peer ──────────────
     try {
       const r3 = String(Math.floor(1000 + Math.random() * 9000));
