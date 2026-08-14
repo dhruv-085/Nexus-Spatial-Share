@@ -84,8 +84,9 @@ export default function App() {
   // transfer after a cancel-and-restart. Never persisted.
   const transferIdRef = useRef<string | null>(null);
   const incomingTransferIdRef = useRef<string | null>(null);
-  // U2/U3: receiver-published progress waiting for the sender to re-arm against it.
-  const resumeManifestRef = useRef<number[]>([]);
+  // Throttles the independent rejoin paths (health-check + ICE watchdogs) so
+  // flaky ICE can't emit duplicate join-room messages within a 5s window.
+  const lastRejoinRef = useRef(0);
   // isGestureDropRef removed — handleDropAction no longer distinguishes gesture vs button
 
   const clientIdRef = useRef<string>("");
@@ -607,8 +608,10 @@ export default function App() {
       if (Date.now() - joinedAt < INITIAL_WAIT_MS) return; // Too early
       if (attempts >= MAX_ATTEMPTS) { clearInterval(interval); return; } // Give up
       if (!socketRef.current?.connected || roomCodeRef.current.length !== 4) return;
+      if (Date.now() - lastRejoinRef.current < 5000) return; // Another rejoin path just fired
 
       attempts++;
+      lastRejoinRef.current = Date.now();
       console.warn(`[HealthCheck] Joined but not P2P connected — auto-rejoin attempt ${attempts}/${MAX_ATTEMPTS}`);
       socketRef.current.emit('join-room', { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
     }, RETRY_INTERVAL_MS);
@@ -1155,7 +1158,6 @@ export default function App() {
     pendingStartTransferRef.current = false;
     transferIdRef.current = null;
     incomingTransferIdRef.current = null;
-    resumeManifestRef.current = [];
 
     if (socketRef.current && roomCodeRef.current.length === 4) {
       setTimeout(() => {
@@ -1248,7 +1250,8 @@ export default function App() {
         iceWatchdogRef.current = setTimeout(() => {
           if (!connectedRef.current) {
             console.warn('[ICE] Watchdog: stuck disconnected for 8s — forcing rejoin');
-            if (socketRef.current?.connected && roomCodeRef.current.length === 4) {
+            if (socketRef.current?.connected && roomCodeRef.current.length === 4 && Date.now() - lastRejoinRef.current >= 5000) {
+              lastRejoinRef.current = Date.now();
               socketRef.current.emit('join-room', { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
             }
           }
@@ -1337,7 +1340,10 @@ export default function App() {
               .forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
           } else if (!transferRequestedRef.current) {
             console.log("CONSOLE: Channels reopened with pending drop and meta present — resuming drop action");
-            handleDropAction();
+            // Mark requested and let the resume block below send the single
+            // START_TRANSFER — handleDropAction() here would send a second one.
+            pendingDropActionRef.current = false;
+            transferRequestedRef.current = true;
           }
         }
 
@@ -1644,7 +1650,6 @@ export default function App() {
             if (isSourceRef.current && transferIdRef.current && payload.transferId === transferIdRef.current && isTransferringRef.current) {
               const manifest: number[] = Array.isArray(payload.manifest) ? payload.manifest : [];
               console.log(`[Visibility] Received RESUME_MANIFEST with ${manifest.length} chunks`);
-              resumeManifestRef.current = manifest;
               const engine = transferEngineRef.current;
               if (engine) {
                 console.log(`[Visibility] Re-arming sender engine from manifest (${manifest.length} chunks)`);
