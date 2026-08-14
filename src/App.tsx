@@ -825,7 +825,12 @@ export default function App() {
           openCtrl.forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
           setMessages(prev => [...prev, "SYSTEM: Requesting file info from sender..."]);
         } else {
-          setMessages(prev => [...prev, "ERROR: Drop failed — P2P connection not ready yet. Please wait a moment."]);
+          // Channels not open yet (e.g. drop clicked right after reconnect while
+          // ICE is connected but the control channel hasn't opened). Register the
+          // pending drop so it self-heals when channels open / FILE_META arrives.
+          console.log("CONSOLE: Drop clicked but P2P channels not ready — registering pending drop to self-heal");
+          pendingDropActionRef.current = true;
+          setMessages(prev => [...prev, "SYSTEM: Drop registered — starting once P2P connects."]);
         }
         return;
       }
@@ -837,8 +842,11 @@ export default function App() {
       }
 
       if (openCtrl.length === 0) {
-        console.error("CONSOLE: handleDropAction — no open control channels.");
-        setMessages(prev => [...prev, `ERROR: Cannot drop — P2P not connected (control: ${openCtrl.length}/${controlConnRef.current.length}, data: ${openData.length}/${connRef.current.length}). Wait for 'P2P Connected' status.`]);
+        // Meta arrived but channels are mid-reconnect — defer the drop; handleOpen
+        // resumes it once the channels are live again.
+        console.log("CONSOLE: handleDropAction — meta present but control channels closed, deferring drop");
+        pendingDropActionRef.current = true;
+        setMessages(prev => [...prev, "SYSTEM: P2P reconnecting — drop will start automatically."]);
         return;
       }
 
@@ -846,6 +854,7 @@ export default function App() {
       // No file picker dialogs here — saveFileAsync shows directory picker ONCE
       // for the first received file, then saves all subsequent files silently.
 
+      pendingDropActionRef.current = false;
       console.log("CONSOLE: Drop recognized on receiver. Requesting transfer.");
       transferRequestedRef.current = true;
       isTransferringRef.current = true;
@@ -1134,8 +1143,19 @@ export default function App() {
     setIncomingFile(null);
     incomingFileRef.current = null;
     setIsGrabbedPermanent(false);
-    setSelectedFiles([]);
-    selectedFilesRef.current = [];
+
+    // Reset stale transfer/role refs so a reconnect never reuses prior-session
+    // state: a stale transferRequestedRef blocks fresh drops, a stale pending
+    // drop fires on dead channels, a stale transferId refuses the resume
+    // handshake. selectedFiles is intentionally preserved so the sender can
+    // still answer REQUEST_FILE_META after a reconnect (it is cleared on
+    // explicit leave / transfer completion instead).
+    transferRequestedRef.current = false;
+    pendingDropActionRef.current = false;
+    pendingStartTransferRef.current = false;
+    transferIdRef.current = null;
+    incomingTransferIdRef.current = null;
+    resumeManifestRef.current = [];
 
     if (socketRef.current && roomCodeRef.current.length === 4) {
       setTimeout(() => {
@@ -1222,6 +1242,17 @@ export default function App() {
         setConnected(false);
         console.log("[ICE] Disconnected — attempting ICE restart");
         try { pc.restartIce(); } catch (e) { console.warn('[ICE] restartIce() not supported:', e); }
+        // Watchdog: if ICE stays disconnected (hotspot change, restart loops),
+        // force a signaling rejoin so both sides rebuild the connection.
+        if (iceWatchdogRef.current) clearTimeout(iceWatchdogRef.current);
+        iceWatchdogRef.current = setTimeout(() => {
+          if (!connectedRef.current) {
+            console.warn('[ICE] Watchdog: stuck disconnected for 8s — forcing rejoin');
+            if (socketRef.current?.connected && roomCodeRef.current.length === 4) {
+              socketRef.current.emit('join-room', { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
+            }
+          }
+        }, 8000);
       } else if (state === 'failed') {
         // Full ICE failure — tear down and restart signaling after 1.5s
         if (iceWatchdogRef.current) { clearTimeout(iceWatchdogRef.current); iceWatchdogRef.current = null; }
@@ -1292,6 +1323,22 @@ export default function App() {
 
         if (transferEngineRef.current) {
           transferEngineRef.current.setConnections(connRef.current, controlConnRef.current);
+        }
+
+        // Self-heal: a drop was requested but didn't complete (channels weren't
+        // live yet, or FILE_META never arrived — the sender lost its file list
+        // on a reset, or the meta raced the reconnect). Now that channels are
+        // live, either re-request the meta (the FILE_META handler resumes the
+        // drop when it arrives) or resume the drop directly if the meta is here.
+        if (!isSourceRef.current && isGlobalLockedRef.current && pendingDropActionRef.current) {
+          if (!incomingFileRef.current) {
+            console.log("CONSOLE: Channels reopened with pending drop but no FILE_META — re-requesting meta from sender");
+            controlConnRef.current.filter(c => c.readyState === 'open')
+              .forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
+          } else if (!transferRequestedRef.current) {
+            console.log("CONSOLE: Channels reopened with pending drop and meta present — resuming drop action");
+            handleDropAction();
+          }
         }
 
         const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
@@ -1942,7 +1989,9 @@ export default function App() {
         controlPanel.classList.add('visible');
         (btnGrab as HTMLButtonElement).style.display = 'none';
         (btnDrop as HTMLButtonElement).style.display = 'flex';
-        (btnDrop as HTMLButtonElement).disabled = false;
+        // Only arm Drop once the P2P link is live — otherwise a click would
+        // fail with "P2P not connected" instead of self-healing on channel open.
+        (btnDrop as HTMLButtonElement).disabled = !connected;
       }
     } else {
       // Room is not locked.
@@ -1957,7 +2006,7 @@ export default function App() {
         controlPanel.classList.remove('visible');
       }
     }
-  }, [isGlobalLocked, isSource, selectedFiles, incomingFile]);
+  }, [isGlobalLocked, isSource, selectedFiles, incomingFile, connected]);
 
   useEffect(() => {
     if (isSocketConnected) (window as any).Signaling?.onConnect();
