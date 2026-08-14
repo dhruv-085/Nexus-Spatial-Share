@@ -2431,7 +2431,12 @@
     document.getElementById('sender-screen').classList.remove('visible');
     document.getElementById('progress-screen').classList.remove('visible');
     document.getElementById('success-screen').classList.remove('visible');
-    document.getElementById('receive-progress').classList.remove('visible');
+    // Do not strip the ETA/cancel overlay if a receive is genuinely in flight
+    // (same protection as transitionToSender). Only resetTransferVisuals may
+    // clear it once the receive has started.
+    if (!(typeof window.getRxTransferActive === 'function' && window.getRxTransferActive())) {
+      document.getElementById('receive-progress').classList.remove('visible');
+    }
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
 
@@ -2753,7 +2758,13 @@
       document.getElementById('progress-screen').classList.remove('visible');
     }
     document.getElementById('success-screen').classList.remove('visible');
-    document.getElementById('receive-progress').classList.remove('visible');
+    // The receiver's ETA/cancel overlay gets the same protection: when the
+    // phone's socket reconnects mid-receive, room-status re-fires and lands
+    // here. Stripping #receive-progress then leaves the receiver with a live
+    // transfer but no cancel button — only resetTransferVisuals may clear it.
+    if (!(typeof window.getRxTransferActive === 'function' && window.getRxTransferActive())) {
+      document.getElementById('receive-progress').classList.remove('visible');
+    }
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
 
@@ -3354,6 +3365,16 @@
     rxSpeed = 0;
     // Exit path 5 of 7 — receiver animation stop (reached by cancel and errors).
     window.resetTransferVisuals();
+  };
+
+  /**
+   * getRxTransferActive — read-only view of the receiver-active latch for
+   * cross-IIFE guards. True from the moment FILE_META lands (startReceive) until
+   * complete/cancel/leave, so other IIFEs can tell a real receive is in flight
+   * instead of stripping the ETA/cancel overlay mid-transfer.
+   */
+  window.getRxTransferActive = function() {
+    return rxTransferActive;
   };
 
   /* ── LEAVE RECEIVER ── */
