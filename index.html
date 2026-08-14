@@ -416,6 +416,7 @@
     #qr-output { display:flex; justify-content:center; margin-bottom:6px; }
     #qr-output canvas, #qr-output img { border-radius:12px; background:#fff; padding:10px; box-shadow:0 0 0 1px rgba(255,255,255,0.1),0 8px 32px rgba(0,0,0,0.4); }
     .qr-label { font-size:10px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; letter-spacing:0.8px; text-transform:uppercase; }
+    .qr-dev-tip { font-size:10px; color:rgba(245,158,11,0.9); font-family:'JetBrains Mono',monospace; letter-spacing:0.3px; margin-top:4px; line-height:1.3; }
     #scanner-wrap {
       position:relative; width:130px; height:130px; margin:0 auto 6px; border-radius:16px; overflow:hidden;
       background:rgba(8,8,8,0.8); box-shadow:inset 0 0 0 1px rgba(6,182,212,0.15);
@@ -1552,6 +1553,7 @@
       <div class="qr-panel active" id="panel-show">
         <div id="qr-output"><div class="qr-placeholder" id="qr-placeholder">Enter a code above to generate QR</div></div>
         <div class="qr-label">Show this to the other device.</div>
+        <div class="qr-dev-tip" id="qr-dev-tip" style="display:none">Tip: Access via local IP (e.g. http://192.168.x.x:5173) for mobile QR scanning.</div>
       </div>
       <div class="qr-panel" id="panel-scan">
         <div id="scanner-wrap">
@@ -2318,17 +2320,30 @@
     }
     return ph;
   }
+  function checkDevTip(hasCode){
+    const tipEl = document.getElementById('qr-dev-tip');
+    if(!tipEl) return;
+    if(hasCode && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')){
+      tipEl.style.display = 'block';
+    } else {
+      tipEl.style.display = 'none';
+    }
+  }
+
   function updateQR(){
     const code=getCode(),out=document.getElementById('qr-output');
     if(!out) return;
     if(code.length<4){
       if(qrInstance){out.innerHTML='';qrInstance=null;}
       qrPlaceholder(out).style.display='';
+      checkDevTip(false);
       return;
     }
     out.innerHTML='';qrInstance=null;
-    try{qrInstance=new QRCode(out,{text:'nexus-spatial:'+code,width:150,height:150,colorDark:'#050505',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});}
+    const url = `${window.location.origin}${window.location.pathname}?room=${code}`;
+    try{qrInstance=new QRCode(out,{text:url,width:150,height:150,colorDark:'#050505',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});}
     catch(e){const ph=qrPlaceholder(out);ph.textContent=code;ph.style.display='';}
+    checkDevTip(true);
   }
 
   /* QR Scanner */
@@ -2349,10 +2364,22 @@
   function startDecoding(video){
     if(!window.ZXing)return;
     try{new window.ZXing.BrowserQRCodeReader().decodeFromVideoElement(video).then(r=>{
-      const m=r.getText().match(/nexus-spatial:(\d{4})/);
-      if(m){const code=m[1];stopScanner();switchQRTab('show');resetGlobe();
+      const text = r.getText() || '';
+      let code = null;
+      const m1 = text.match(/(?:[?&]room=|nexus-spatial:|^)(\d{4})(?:[&#]|$)/i);
+      if (m1) {
+        code = m1[1];
+      } else {
+        const m2 = text.match(/nexus-spatial:(\d):(\d):(\d):(\d)/i);
+        if (m2) {
+          code = m2.slice(1, 5).join('');
+        }
+      }
+      if(code){
+        stopScanner();switchQRTab('show');resetGlobe();
         code.split('').forEach((ch,idx)=>{setDigit(idx,ch);setTimeout(()=>triggerGlobe(idx),idx*80);});
-        setTimeout(()=>{updateQR();joinRoom();},400);}
+        setTimeout(()=>{updateQR();joinRoom();},400);
+      }
     }).catch(()=>{});}catch(e){}
   }
   function stopScanner(){if(scannerStream){scannerStream.getTracks().forEach(t=>t.stop());scannerStream=null;}document.getElementById('scanner-video').srcObject=null;}
@@ -2497,8 +2524,48 @@
       }
     }, 600);
   });
+  function initURLRoomJoin(){
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlRoom = params.get('room');
+      if (urlRoom && /^\d{4}$/.test(urlRoom)) {
+        for (let i = 0; i < 4; i++) {
+          setDigit(i, urlRoom[i]);
+          triggerGlobe(i);
+        }
+        updateQR();
+
+        try {
+          const cleanURL = window.location.origin + window.location.pathname;
+          window.history.replaceState({}, document.title, cleanURL);
+        } catch (_) {}
+
+        const attemptJoin = () => {
+          if (typeof window._socketJoinRoom === 'function') {
+            joinRoom();
+            return true;
+          }
+          return false;
+        };
+
+        if (!attemptJoin()) {
+          let attempts = 0;
+          const timer = setInterval(() => {
+            attempts++;
+            if (attemptJoin() || attempts >= 50) {
+              clearInterval(timer);
+            }
+          }, 100);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse room code from URL:', e);
+    }
+  }
+
   window._debugGlobe = () => activeEdgeProgress;
   kick();
+  initURLRoomJoin();
 })();
 
 /* ═══════════════════════════════════════════════
