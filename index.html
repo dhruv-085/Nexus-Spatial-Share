@@ -591,8 +591,8 @@
     /* ── PROGRESS STATE ── */
     #progress-screen {
       position: fixed; inset: 0; z-index: 25;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 16px; padding: 56px 24px 36px;
+      display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+      padding: calc(64px + env(safe-area-inset-top, 0px)) 24px 36px;
       opacity: 0; pointer-events: none; transition: opacity 0.3s;
       background: transparent;
       backdrop-filter: none;
@@ -601,6 +601,12 @@
     #progress-screen.visible { opacity: 1; }
     #progress-screen > * { pointer-events: none; }
     #progress-screen.visible > * { pointer-events: auto; }
+
+    .progress-top-region, .progress-bottom-region {
+      flex: 1; display: flex; flex-direction: column; align-items: center; width: 100%;
+    }
+    .progress-top-region { justify-content: flex-end; padding-bottom: 20px; }
+    .progress-bottom-region { justify-content: flex-start; padding-top: 20px; gap: 16px; }
 
     .progress-file-label {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -807,8 +813,8 @@
     /* ── RECEIVE PROGRESS ── */
     #receive-progress {
       position: fixed; inset: 0; z-index: 25;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 16px; padding: 56px 24px 36px;
+      display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+      padding: calc(64px + env(safe-area-inset-top, 0px)) 24px 36px;
       opacity: 0; pointer-events: none; transition: opacity 0.35s;
       background: transparent;
     }
@@ -1680,7 +1686,9 @@
 
 <!-- PROGRESS SCREEN -->
 <div id="progress-screen">
-  <div class="progress-file-label" id="progress-file-label"></div>
+  <div class="progress-top-region">
+    <div class="progress-file-label" id="progress-file-label"></div>
+  </div>
   <div class="progress-ring-wrap">
     <svg width="180" height="180" viewBox="0 0 180 180">
       <defs>
@@ -1697,17 +1705,19 @@
       <div class="progress-pct-sym">%</div>
     </div>
   </div>
-  <div class="progress-meta">
-    <div class="progress-filename" id="progress-filename"></div>
-    <div class="progress-stats" id="progress-stats"></div>
-  </div>
-  <div id="cancel-area">
-    <button class="btn-cancel" id="btn-cancel" onclick="showCancelConfirm()">Cancel Transfer</button>
-    <div id="cancel-confirm">
-      <div class="cancel-confirm-text">Cancel transfer? The file will be incomplete on the receiver.</div>
-      <div class="cancel-confirm-btns">
-        <button class="btn-confirm-yes" onclick="cancelTransfer()">Yes, Cancel</button>
-        <button class="btn-confirm-no" onclick="hideCancelConfirm()">No, Continue</button>
+  <div class="progress-bottom-region">
+    <div class="progress-meta">
+      <div class="progress-filename" id="progress-filename"></div>
+      <div class="progress-stats" id="progress-stats"></div>
+    </div>
+    <div id="cancel-area">
+      <button class="btn-cancel" id="btn-cancel" onclick="showCancelConfirm()">Cancel Transfer</button>
+      <div id="cancel-confirm">
+        <div class="cancel-confirm-text">Cancel transfer? The file will be incomplete on the receiver.</div>
+        <div class="cancel-confirm-btns">
+          <button class="btn-confirm-yes" onclick="cancelTransfer()">Yes, Cancel</button>
+          <button class="btn-confirm-no" onclick="hideCancelConfirm()">No, Continue</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1789,7 +1799,9 @@
 
 <!-- RECEIVE PROGRESS (incoming transfer) -->
 <div id="receive-progress">
-  <div class="receive-label">Receiving...</div>
+  <div class="progress-top-region">
+    <div class="receive-label">Receiving...</div>
+  </div>
   <div class="progress-ring-wrap">
     <svg width="180" height="180" viewBox="0 0 180 180">
       <defs>
@@ -1806,17 +1818,19 @@
       <div class="progress-pct-sym">%</div>
     </div>
   </div>
-  <div class="progress-meta">
-    <div class="progress-filename" id="receive-filename"></div>
-    <div class="progress-stats" id="receive-stats"></div>
-  </div>
-  <div id="rx-cancel-area" style="margin-top: 24px;">
-    <button class="btn-cancel" id="btn-rx-cancel" onclick="showRxCancelConfirm()">Cancel Transfer</button>
-    <div id="rx-cancel-confirm">
-      <div class="cancel-confirm-text">Cancel transfer? The file will be incomplete.</div>
-      <div class="cancel-confirm-btns">
-        <button class="btn-confirm-yes" onclick="cancelTransfer()">Yes, Cancel</button>
-        <button class="btn-confirm-no" onclick="hideRxCancelConfirm()">No, Continue</button>
+  <div class="progress-bottom-region">
+    <div class="progress-meta">
+      <div class="progress-filename" id="receive-filename"></div>
+      <div class="progress-stats" id="receive-stats"></div>
+    </div>
+    <div id="rx-cancel-area">
+      <button class="btn-cancel" id="btn-rx-cancel" onclick="showRxCancelConfirm()">Cancel Transfer</button>
+      <div id="rx-cancel-confirm">
+        <div class="cancel-confirm-text">Cancel transfer? The file will be incomplete.</div>
+        <div class="cancel-confirm-btns">
+          <button class="btn-confirm-yes" onclick="cancelTransfer()">Yes, Cancel</button>
+          <button class="btn-confirm-no" onclick="hideRxCancelConfirm()">No, Continue</button>
+        </div>
       </div>
     </div>
   </div>
@@ -2125,18 +2139,52 @@
     rafId=requestAnimationFrame(drawGlobe);
   }
   function kick(){if(!rafId)rafId=requestAnimationFrame(drawGlobe);}
-  function activateNode(slot,digitChar){
-    const d=parseInt(digitChar),nodeIdx=nodeForDigit(slot,d);
-    activeNodes[slot]=nodeIdx;glowTarget[nodeIdx]=1;
-    for(let s=0;s<4;s++)if(s!==slot&&activeNodes[s]!==-1)activeEdgeProgress.push({i:activeNodes[s],j:nodeIdx,t:0});
+  function activateNode(slot, digitChar) {
+    const d = parseInt(digitChar);
+    if (isNaN(d)) return;
+    const nodeIdx = nodeForDigit(slot, d);
+    if (activeNodes[slot] === nodeIdx) return; // No-op if node already active for this slot
+    if (activeNodes[slot] !== -1 && activeNodes[slot] !== nodeIdx) {
+      deactivateNode(slot); // Flush old node's edges for this slot
+    }
+    activeNodes[slot] = nodeIdx;
+    glowTarget[nodeIdx] = 1;
+    for (let s = 0; s < 4; s++) {
+      if (s !== slot && activeNodes[s] !== -1) {
+        const nodeA = activeNodes[s], nodeB = nodeIdx;
+        const exists = activeEdgeProgress.some(
+          ae => (ae.i === nodeA && ae.j === nodeB) || (ae.i === nodeB && ae.j === nodeA)
+        );
+        if (!exists) {
+          activeEdgeProgress.push({ i: nodeA, j: nodeB, t: 0 });
+        }
+      }
+    }
     kick();
   }
-  function deactivateNode(slot){
-    const pn=activeNodes[slot];
-    if(pn!==-1){glowTarget[pn]=0;activeEdgeProgress=activeEdgeProgress.filter(ae=>ae.i!==pn&&ae.j!==pn);}
-    activeNodes[slot]=-1;kick();
+  function deactivateNode(slot) {
+    const pn = activeNodes[slot];
+    if (pn !== -1) {
+      glowTarget[pn] = 0;
+      activeEdgeProgress = activeEdgeProgress.filter(ae => ae.i !== pn && ae.j !== pn);
+    }
+    activeNodes[slot] = -1;
+    kick();
   }
-  function resetGlobe(){activeNodes=[-1,-1,-1,-1];glowTarget.fill(0);activeEdgeProgress=[];kick();}
+  function resetGlobe(){
+    activeNodes=[-1,-1,-1,-1];
+    glowTarget.fill(0);
+    activeEdgeProgress=[];
+    for (let i = 0; i < 4; i++) {
+      digits_state[i] = '';
+      if (boxes[i]) {
+        boxes[i].value = '';
+        boxes[i].classList.remove('filled');
+      }
+    }
+    kick();
+  }
+  window.resetGlobe = resetGlobe;
 
   /* OTP */
   const digits_state=['','','',''];
@@ -2449,6 +2497,7 @@
       }
     }, 600);
   });
+  window._debugGlobe = () => activeEdgeProgress;
   kick();
 })();
 
@@ -2470,9 +2519,9 @@
 (function () {
 
   /* ── Ring animation parameters ── */
-  const SPAWN_MS    = 700;   // interval between ring births
-  const LIFE_MS     = 1400;  // ring lifetime
-  const TRAVEL_PX   = 260;   // radial distance covered over a lifetime
+  const SPAWN_MS    = 1350;  // interval between ring births (calm water ripple pacing)
+  const LIFE_MS     = 3400;  // ring lifetime (slow serene duration)
+  const TRAVEL_PX   = 240;   // radial distance covered over a lifetime
   const MAX_RINGS   = 4;     // concurrent cap
   const R0_RATIO    = 0.4556; // (r 80 + strokeWidth 4 / 2) / 180 viewBox
 
@@ -2509,8 +2558,8 @@
    * screen draws — they used to carry separate copies of this easing.
    */
   const ringRadius = (ringMode, t, r0) => ringMode === 'out'
-    ? r0 + TRAVEL_PX * (1 - Math.pow(1 - t, 3))   // ease-out: fast, then settle
-    : r0 + TRAVEL_PX * (1 - Math.pow(t, 2));      // ease-in: accelerate inward
+    ? r0 + TRAVEL_PX * (1 - Math.pow(1 - t, 2))   // quadratic ease-out: fluid ripple motion
+    : r0 + TRAVEL_PX * (1 - Math.sin((t * Math.PI) / 2)); // smooth sine ease-in
 
   /**
    * Resolve the emit origin from the live DOM every frame, so the rings stay
@@ -2585,14 +2634,14 @@
       if (t >= 1) { rings.splice(i, 1); continue; }
 
       const radius = ringRadius(mode, t, origin.r0);
+      const PEAK_ALPHA = 0.16;
       let alpha, width;
       if (mode === 'out') {
-        alpha = 0.45 * (1 - t);                           // 0.45 → 0
-        width = lerp(2, 0.75, t);
+        alpha = t < 0.2 ? PEAK_ALPHA * (t / 0.2) : PEAK_ALPHA * (1 - (t - 0.2) / 0.8);
+        width = lerp(1.8, 0.6, t);
       } else {
-        // Fade in, peak, then fade to near-zero so the ring does not pop at the edge.
-        alpha = t < 0.25 ? 0.45 * (t / 0.25) : lerp(0.45, 0.03, (t - 0.25) / 0.75);
-        width = lerp(0.75, 2, t);
+        alpha = t < 0.25 ? PEAK_ALPHA * (t / 0.25) : lerp(PEAK_ALPHA, 0.02, (t - 0.25) / 0.75);
+        width = lerp(0.6, 1.8, t);
       }
 
       if (alpha <= 0 || radius <= 0) continue;
