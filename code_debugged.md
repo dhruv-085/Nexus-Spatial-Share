@@ -536,3 +536,32 @@ This file documents all bugs fixed in this project. **All future agent sessions 
   2. Structured `#progress-screen` and `#receive-progress` into a 3-stage flex container (`.progress-top-region`, `.progress-ring-wrap`, `.progress-bottom-region`) in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L591-L610), locking `.progress-ring-wrap` exactly at `50vh` across all viewports.
   3. Refactored `activateNode` and `deactivateNode` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L2140-L2175) to validate edge uniqueness (`!exists`) and return early on same-node re-activation, and updated `resetGlobe()` to flush all globe and OTP state. Extended Playwright test suite [test_otp.cjs](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_otp.cjs) with 38/38 passing checks.
 
+---
+
+## 43. Signaling Server Connection Failure on Local Network IP & Non-Standard Dev Ports
+* **Symptom**:
+  1. The bottom bar "Signaling Server" dot remained red/amber and failed to turn green when accessing the application from mobile devices or other devices on the local Wi-Fi / LAN network.
+  2. The home screen status pill stayed at "Not Connected", and attempting to create or join a room failed or hung with "Connecting to signaling server... please wait".
+* **Root Cause**:
+  1. `SERVER_URL` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L225-L230) was hardcoded to check `window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'` to append port `:3000`. When accessed via a local network IP (e.g., `192.168.x.x:5173`), `hostname` was an IP address, so it fell back to `${window.location.protocol}//${window.location.host}` (`192.168.x.x:5173`). Because Express/Socket.IO runs on port `3000`, the socket connection to port `5173` failed with a `connect_error`.
+  2. `Signaling.onConnect()` and `onDisconnect()` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L3967-L3985) relied strictly on a closure-cached reference `dotSignaling` created at script load, which could miss updating if DOM elements re-mounted or initialized asynchronously.
+* **Fix**:
+  1. Refactored `SERVER_URL` calculation in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L225-L230) to check whether `window.location.port` is a non-standard dev port (not `3000`, empty, `80`, or `443`). Whenever running on a dev port (e.g. Vite on 5173), `SERVER_URL` automatically targets port `:3000` on `window.location.hostname` across both localhost and local network IP addresses.
+  2. Updated `Signaling.onConnect()` and `Signaling.onDisconnect()` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L3967-L3985) to dynamically retrieve `document.getElementById('dot-signaling')` and `document.getElementById('dot-webrtc')` at call time, ensuring class transitions (`green` / `amber`) always take effect.
+
+---
+
+## 44. Room Joining Stale Error Text Persistence & Socket Transport Resilience
+* **Symptom**:
+  1. Clicking "Join Room" or "Create Room" displayed "Please wait, the website is still loading..." or "Connecting to signaling server... please wait." in `#join-error`, and the message remained stuck on screen even after the socket connected and the signaling server dot turned green.
+  2. Users were unable to tell if room joining succeeded because the error message persisted under the room code inputs.
+* **Root Cause**:
+  1. When room joining was attempted before React mounted or while socket connection was negotiating, `joinRoom()` set `#join-error` text. When `socket.on("connect")` and `Signaling.onConnect()` fired, no handler ever cleared `#join-error`, leaving the stale loading/connecting text permanently rendered.
+  2. Socket.IO client initialization lacked explicit `transports: ['websocket', 'polling']`, causing potential fallback delays in certain network environments.
+* **Fix**:
+  1. Updated `Signaling.onConnect()` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html#L3967-L3980) and `socket.on("connect")` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L246-L255) to automatically check and clear any lingering `"loading"` or `"signaling"` error string from `#join-error` upon connection.
+  2. Updated `_socketJoinRoom`, `_socketCreateRoom`, and `App.tsx` mount hooks to clear stale loading messages when room actions are initiated or when React mounts.
+  3. Added explicit `transports: ['websocket', 'polling']` to `io()` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx#L230-L237).
+
+
+

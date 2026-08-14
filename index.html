@@ -3967,9 +3967,16 @@
     /** Socket connected to signaling server */
     onConnect() {
       sigConnected = true;
-      dotSignaling.classList.remove('amber');
-      dotSignaling.classList.add('green');
+      const elSig = document.getElementById('dot-signaling') || dotSignaling;
+      if (elSig) {
+        elSig.classList.remove('amber');
+        elSig.classList.add('green');
+      }
       updateStatusPill();
+      const joinErr = document.getElementById('join-error');
+      if (joinErr && (joinErr.textContent.includes('signaling') || joinErr.textContent.includes('loading'))) {
+        joinErr.textContent = '';
+      }
     },
 
     /** Socket disconnected from signaling server */
@@ -3978,8 +3985,10 @@
       sigConnected  = false;
       peerConnected = false;
       webrtcOpen    = false;
-      dotSignaling.classList.remove('green','amber');
-      dotWebRTC.classList.remove('green');
+      const elSig = document.getElementById('dot-signaling') || dotSignaling;
+      const elWeb = document.getElementById('dot-webrtc') || dotWebRTC;
+      if (elSig) elSig.classList.remove('green','amber');
+      if (elWeb) elWeb.classList.remove('green');
       updateStatusPill();
       if (wasConnected && window.Toast) Toast.show('Cannot reach signaling server. Check connection.', 'error');
     },

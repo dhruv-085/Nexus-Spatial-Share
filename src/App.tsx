@@ -223,10 +223,12 @@ export default function App() {
   }, [isTransferring]);
 
   useEffect(() => {
-    const SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    const isDevPort = !!window.location.port && window.location.port !== '3000' && window.location.port !== '80' && window.location.port !== '443';
+    const SERVER_URL = isDevPort
       ? `${window.location.protocol}//${window.location.hostname}:3000`
       : `${window.location.protocol}//${window.location.host}`;
     const socket = io(SERVER_URL, {
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 500,
@@ -246,6 +248,10 @@ export default function App() {
       console.log("Connected to signaling server");
       setIsSocketConnected(true);
       (window as any).Signaling?.onConnect?.();
+      const joinErr = document.getElementById('join-error');
+      if (joinErr && (joinErr.textContent?.includes('signaling') || joinErr.textContent?.includes('loading'))) {
+        joinErr.textContent = '';
+      }
       if (roomCodeRef.current.length === 4) {
         // Socket reconnected after a drop. The P2P data path almost certainly
         // died with it, but connectedRef can still be true (dc.onclose/ICE
@@ -1934,13 +1940,27 @@ export default function App() {
 
     (window as any)._socketJoinRoom = (code: string) => {
       setRoomCode(code);
+      const joinErr = document.getElementById('join-error');
+      if (joinErr && socketRef.current?.connected && (joinErr.textContent?.includes('signaling') || joinErr.textContent?.includes('loading'))) {
+        joinErr.textContent = '';
+      }
       socketRef.current?.emit('join-room', { roomCode: code, clientId: clientIdRef.current });
     };
 
     (window as any)._socketCreateRoom = (code: string) => {
       setRoomCode(code);
+      const joinErr = document.getElementById('join-error');
+      if (joinErr && socketRef.current?.connected && (joinErr.textContent?.includes('signaling') || joinErr.textContent?.includes('loading'))) {
+        joinErr.textContent = '';
+      }
       socketRef.current?.emit('join-room', { roomCode: code, clientId: clientIdRef.current });
     };
+
+    // Clear initial loading notice if present
+    const joinErr = document.getElementById('join-error');
+    if (joinErr && joinErr.textContent?.includes('loading')) {
+      joinErr.textContent = '';
+    }
 
     // ── file-input: sync React state so App.tsx knows which files to send ──
     (window as any).onFilesSelected = (files: File[]) => {
