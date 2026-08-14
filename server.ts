@@ -42,14 +42,40 @@ async function startServer() {
   app.use("/peerjs", peerServer);
 
   // Extend room structure to track precise peer lists for WebRTC
-  const rooms = new Map<string, { isLocked: boolean, sourceId: string | null, peers: string[], offererSocketId: string | null, peerClientIds?: Map<string, string> }>();
+  const rooms = new Map<string, { isLocked: boolean, sourceId: string | null, sourceClientId: string | null, peers: string[], offererSocketId: string | null, peerClientIds?: Map<string, string> }>();
   const socketToRoom = new Map<string, string>();
 
   // Grace-period timers: if a peer disconnects, we wait before destroying the room
   // so a brief Socket.IO reconnect (WebSocket upgrade failure → polling fallback) doesn't kill the session.
   const pendingDestroyTimers = new Map<string, ReturnType<typeof setTimeout>>(); // roomId → timer
+  // Lock-hold timers: if the peer that grabbed the room disconnects, we keep the
+  // lock reserved for a grace window so a mid-transfer reconnect can resume; only
+  // if they never return do we release it (so the surviving peer can re-grab).
+  const pendingLockTimers = new Map<string, ReturnType<typeof setTimeout>>(); // roomId → timer
+  const LOCK_GRACE_MS = process.env.LOCK_GRACE_MS ? Number(process.env.LOCK_GRACE_MS) : 45_000;
 
   // Socket.io Signaling Logic
+  // Re-assert a held lock after a mid-transfer reconnect. The owner is tracked
+  // by clientId (stable across socket reconnects). When the room is back to two
+  // peers and a lock is still reserved, re-broadcast global-lock so BOTH peers
+  // restore their source/receiver roles and can resume the transfer.
+  const reassertRoomLock = (roomCode: string) => {
+    const room = rooms.get(roomCode);
+    if (!room || !room.isLocked || !room.sourceClientId) return;
+    const ownerSocketId = Array.from(room.peerClientIds?.entries() ?? [])
+      .find(([, cid]) => cid === room.sourceClientId)?.[0];
+    if (!ownerSocketId || !room.peers.includes(ownerSocketId)) return;
+
+    room.sourceId = ownerSocketId;
+    const lockTimer = pendingLockTimers.get(roomCode);
+    if (lockTimer) {
+      clearTimeout(lockTimer);
+      pendingLockTimers.delete(roomCode);
+    }
+    console.log(`[Server] Re-asserting lock for room ${roomCode} to socket ${ownerSocketId} (clientId ${room.sourceClientId})`);
+    io.in(roomCode).emit('global-lock', { sourceId: ownerSocketId });
+  };
+
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
@@ -76,6 +102,7 @@ async function startServer() {
         room = { 
           isLocked: false, 
           sourceId: null, 
+          sourceClientId: null,
           peers: [socket.id], 
           offererSocketId: null,
           peerClientIds: new Map()
@@ -132,10 +159,11 @@ async function startServer() {
           room.peerClientIds.delete(existingPeerSocketId);
           socketToRoom.delete(existingPeerSocketId);
 
-          // The replaced socket owned the room lock — clear it so the reconnecting
-          // session (same clientId) can re-grab once its transport recovers.
+          // The replaced socket owned the room lock — it is the SAME clientId
+          // reconnecting, so the lock stays reserved. reassertRoomLock() below
+          // will point sourceId at the fresh socket and re-broadcast roles.
+          // (Previously this cleared the lock, which broke mid-transfer resume.)
           if (room.sourceId === existingPeerSocketId) {
-            room.isLocked = false;
             room.sourceId = null;
           }
 
@@ -143,6 +171,19 @@ async function startServer() {
           if (oldSocket) {
             oldSocket.leave(roomCode);
           }
+
+          // This peer dropped and reconnected with a fresh socket. The other
+          // peer's WebRTC path to it is dead, but dc.onclose/ICE failure lags
+          // real network loss by 30s+, so the staying peer still thinks it is
+          // "connected". Notify it now so it resets WebRTC and re-negotiates
+          // on the room-status:ready re-broadcast below — otherwise Drop never
+          // works again after a blip.
+          room.peers.forEach(peerId => {
+            if (peerId !== socket.id) {
+              console.log(`[Server] Peer ${clientId} reconnected with new socket — notifying ${peerId} to reset P2P`);
+              io.to(peerId).emit('peer-disconnected');
+            }
+          });
         }
         room.peerClientIds.set(socket.id, clientId);
       }
@@ -161,6 +202,14 @@ async function startServer() {
         // Room was empty after purge — treat as fresh first join
         room.peers = [socket.id];
         room.offererSocketId = null;
+        room.isLocked = false;
+        room.sourceId = null;
+        room.sourceClientId = null;
+        const staleLock = pendingLockTimers.get(roomCode);
+        if (staleLock) {
+          clearTimeout(staleLock);
+          pendingLockTimers.delete(roomCode);
+        }
         socket.emit('room-status', { status: 'waiting', role: 'answerer', code: roomCode });
         console.log(`[Server] Room ${roomCode} reclaimed after purge, waiting for second peer`);
         socket.to(roomCode).emit("user-joined", socket.id);
@@ -180,6 +229,8 @@ async function startServer() {
         io.to(firstPeerId).emit('room-status', { status: 'ready', role: 'answerer', code: roomCode });
         console.log(`[Server] Room ${roomCode} ready — offerer: ${socket.id}, answerer: ${firstPeerId}`);
         socket.to(roomCode).emit("user-joined", socket.id);
+        // If a lock was being held (mid-transfer reconnect), restore roles now.
+        reassertRoomLock(roomCode);
         return;
       }
 
@@ -199,6 +250,8 @@ async function startServer() {
           });
         });
         console.log(`[Server] Reconnect: ${socket.id} rejoining room ${roomCode}`);
+        // If a lock was being held (mid-transfer reconnect), restore roles now.
+        reassertRoomLock(roomCode);
         return;
       }
 
@@ -226,6 +279,9 @@ async function startServer() {
       if (room && !room.isLocked) {
         room.isLocked = true;
         room.sourceId = socket.id;
+        // Remember the OWNER by clientId — it survives socket reconnects, so a
+        // mid-transfer disconnect can re-assert the same grab on rejoin.
+        room.sourceClientId = room.peerClientIds?.get(socket.id) ?? null;
         console.log(`Grab event in room: ${roomCode} by ${socket.id}`);
         io.in(roomCode).emit("global-lock", { sourceId: socket.id });
       }
@@ -236,6 +292,7 @@ async function startServer() {
       if (room && room.isLocked) {
         room.isLocked = false;
         room.sourceId = null;
+        room.sourceClientId = null;
         console.log(`Drop event in room: ${roomCode}`);
         io.in(roomCode).emit("global-unlock");
       }
@@ -276,6 +333,7 @@ async function startServer() {
         // Reset room lock state
         room.isLocked = false;
         room.sourceId = null;
+        room.sourceClientId = null;
       }
     });
 
@@ -296,14 +354,48 @@ async function startServer() {
         room.peerClientIds.delete(socket.id);
       }
 
-      // Clear any lock/offerer state owned by the departing socket so the room
-      // can be re-locked / re-negotiated after the peer reconnects. A lock only
-      // means anything while both peers are present, so it also clears when a
-      // real departure leaves fewer than two peers (whoever owned it) — letting
-      // the surviving peer re-grab when the room refills.
-      if (room.sourceId === socket.id || room.peers.length < 2) {
-        room.isLocked = false;
+      // Offerer state is always cleared on departure so WebRTC can re-negotiate.
+      //
+      // Mid-transfer reconnect preservation: if the SOURCE (lock owner) is the
+      // one that dropped, we keep the lock reserved under its clientId for a
+      // grace window. When that client rejoins, the join-room handler re-asserts
+      // the lock and re-broadcasts global-lock, letting both peers restore their
+      // roles and resume the transfer. Only if the owner never returns does the
+      // timer release the room. If instead a NON-source peer drops leaving one
+      // peer behind, the lock survives only when the surviving peer is the owner
+      // (their grab is still valid); otherwise the lock is meaningless alone and
+      // clears so a fresh grab is possible.
+      if (room.sourceId === socket.id) {
+        const sourceClientId = room.sourceClientId;
         room.sourceId = null;
+        if (sourceClientId) {
+          console.log(`[Server] Lock owner ${socket.id} (clientId ${sourceClientId}) disconnected — holding lock for ${LOCK_GRACE_MS/1000}s`);
+          const existingLock = pendingLockTimers.get(roomId);
+          if (existingLock) clearTimeout(existingLock);
+          const lockTimer = setTimeout(() => {
+            pendingLockTimers.delete(roomId);
+            const lockedRoom = rooms.get(roomId);
+            if (lockedRoom && lockedRoom.isLocked && lockedRoom.sourceClientId === sourceClientId) {
+              lockedRoom.isLocked = false;
+              lockedRoom.sourceId = null;
+              lockedRoom.sourceClientId = null;
+              console.log(`[Server] Lock owner ${sourceClientId} never returned — releasing lock for room ${roomId}`);
+              io.in(roomId).emit('global-unlock');
+            }
+          }, LOCK_GRACE_MS);
+          pendingLockTimers.set(roomId, lockTimer);
+        } else {
+          room.isLocked = false;
+        }
+      } else if (room.peers.length < 2) {
+        // The non-source peer left, leaving only one peer. If the surviving peer
+        // owns the lock, keep it (their grab is still valid); otherwise the room
+        // has no valid lock owner and the lock means nothing without a peer.
+        if (room.sourceId !== room.peers[0]) {
+          room.isLocked = false;
+          room.sourceId = null;
+          room.sourceClientId = null;
+        }
       }
       if (room.offererSocketId === socket.id) {
         room.offererSocketId = room.peers[0] ?? null;

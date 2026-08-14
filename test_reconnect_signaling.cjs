@@ -3,27 +3,33 @@
  *
  * Three independent rooms prove three server behaviors:
  *
- *  R1 — a clientId replacement must clear a stale lock, and the stale socket's
- *       late disconnect must not notify the healthy pair.
+ *  R1 — a clientId replacement (same device, new socket) must PRESERVE the lock
+ *       so a mid-transfer reconnect can resume; the replaced session's re-grab
+ *       is a no-op (the room is already locked by that identity). A stale
+ *       socket's late disconnect must not notify the healthy pair.
  *        A joins (laptop), B joins (phone). A grabs (room locks). A2 rejoins
  *        with A's clientId on a NEW socket (socket.io gives a new id on
- *        reconnect), replacing A. A2 then re-grabs: it must succeed because the
- *        lock previously owned by the replaced socket was cleared. Current
- *        server never clears the lock on replacement -> A2's grab is silently
- *        ignored -> FAIL. Then stale A disconnects (ping timeout) -> the server
- *        must not emit peer-disconnected/waiting to B or A2.
+ *        reconnect), replacing A. The lock stays reserved under 'laptop' and
+ *        reassertRoomLock() points sourceId at A2 and re-broadcasts global-lock.
+ *        A2's re-grab is therefore ignored (already locked). Then stale A
+ *        disconnects (ping timeout) -> the server must not emit
+ *        peer-disconnected/waiting to B or A2.
  *
- *  R2 — a real source departure must clear the lock so the peer can re-grab.
- *        C grabs, then disconnects for real. D must be able to re-grab.
- *        Current server never resets isLocked/sourceId on disconnect -> D's
- *        re-grab is ignored -> FAIL.
+ *  R2 — a real SOURCE departure must NOT clear the lock immediately: it stays
+ *        reserved under the owner's clientId for LOCK_GRACE_MS so the owner can
+ *        rejoin and resume. Only after the grace window does the room release
+ *        and let the surviving peer re-grab. The test uses LOCK_GRACE_MS=1500.
  *
  *  R3 — re-joining on the SAME socket must re-broadcast 'ready' to the peer.
  *        E joins, F joins. E re-emits join-room on the same socket id
  *        (isReconnect path). F must receive a fresh 'ready'. Current server
  *        only notifies the reconnecting socket -> F gets nothing -> FAIL.
  *
- * Run:   npm run dev (in one terminal)
+ *  R4 — a NON-source departure must PRESERVE the surviving source's lock (the
+ *        source keeps its grab so it can resume when the receiver returns);
+ *        the source's re-grab is a no-op because it never lost the lock.
+ *
+ * Run:   LOCK_GRACE_MS=1500 npm run dev  (in one terminal — short grace for R2)
  *        node test_reconnect_signaling.cjs
  */
 const { io } = require('socket.io-client');
@@ -39,10 +45,11 @@ const WAIT = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function connect() {
   const s = io(URL, OPTS);
-  const recv = { status: [], peerDisconnected: 0, globalLock: [] };
+  const recv = { status: [], peerDisconnected: 0, globalLock: [], globalUnlock: 0 };
   s.on('room-status', (d) => recv.status.push(d));
   s.on('peer-disconnected', () => { recv.peerDisconnected += 1; });
   s.on('global-lock', (d) => recv.globalLock.push(d));
+  s.on('global-unlock', () => { recv.globalUnlock += 1; });
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('connect timeout')), 8000);
     s.on('connect', () => { clearTimeout(t); resolve({ s, recv }); });
@@ -97,33 +104,42 @@ const hasWaitingAfter = (c, before) =>
       record('R1: grab locks room for both peers', true);
 
       // A2 rejoins with A's clientId on a NEW socket (reconnect signature).
-      const aLocksBefore = lockCount(A);
       const A2 = track(await connect());
       await join(A2, r1, 'laptop');
       await waitFor(() => A2.recv.status.some((s) => s.status === 'ready' && s.role === 'offerer'), 'R1 A2 ready/offerer');
       await waitFor(() => readyCount(B) >= 2, 'R1 B fresh ready re-broadcast');
       record('R1: replaced socket is new offerer and peer gets fresh ready', true);
 
-      // A2 re-grabs — must succeed: replacement must have cleared A's stale lock.
-      const a2LocksBefore = lockCount(A2);
+      // The lock must survive the replacement (same clientId = same identity) and
+      // be re-asserted onto the fresh socket. reassertRoomLock() re-broadcasts
+      // global-lock, so A2 sees its own lock restored.
+      await waitFor(() => lockCount(A2) > 0, 'R1 lock re-asserted to A2 after replacement');
+      const a2LocksAfterReassert = lockCount(A2);
+
+      // A2 re-grabs — must be a NO-OP: the room is already locked by A2's identity.
       A2.s.emit('grabbed', r1);
-      await waitFor(() => lockCount(A2) > a2LocksBefore, 'R1 A2 re-grab locks after replacement');
+      await WAIT(800);
       record(
-        'R1: lock cleared on replacement so reconnected session can re-grab',
-        lockCount(A2) > a2LocksBefore,
-        `A2 globalLock count=${lockCount(A2)}`
+        'R1: lock preserved across replacement (re-grab is a no-op)',
+        lockCount(A2) === a2LocksAfterReassert,
+        `A2 globalLock count=${lockCount(A2)} (reassert included)`
       );
 
       // Stale A disconnects — healthy pair must not be told the peer left.
+      // Snapshot the counters first: B legitimately received one
+      // peer-disconnected during A2's rejoin (the staying peer must reset its
+      // WebRTC), so only NEW notifications after this point count as a storm.
       const bStatusBefore = B.recv.status.length;
+      const bDisconnectsBefore = B.recv.peerDisconnected;
+      const a2DisconnectsBefore = A2.recv.peerDisconnected;
       A.s.disconnect();
       await WAIT(1500);
-      const storm = B.recv.peerDisconnected > 0 || hasWaitingAfter(B, bStatusBefore) ||
-                    A2.recv.peerDisconnected > 0;
+      const storm = B.recv.peerDisconnected > bDisconnectsBefore || hasWaitingAfter(B, bStatusBefore) ||
+                    A2.recv.peerDisconnected > a2DisconnectsBefore;
       record(
         'R1: stale replaced socket disconnect does not notify healthy peers',
         !storm,
-        `B peerDisconnected=${B.recv.peerDisconnected} B newWaiting=${hasWaitingAfter(B, bStatusBefore)} A2 peerDisconnected=${A2.recv.peerDisconnected}`
+        `B peerDisconnected=${B.recv.peerDisconnected} (before ${bDisconnectsBefore}) B newWaiting=${hasWaitingAfter(B, bStatusBefore)} A2 peerDisconnected=${A2.recv.peerDisconnected} (before ${a2DisconnectsBefore})`
       );
     } catch (err) {
       record('R1 completed without internal error', false, String((err && err.message) || err));
@@ -148,12 +164,30 @@ const hasWaitingAfter = (c, before) =>
       await waitFor(() => D.recv.peerDisconnected > 0, 'R2 D notified of departure');
       record('R2: real departure notifies remaining peer', D.recv.peerDisconnected > 0);
 
+      // The source's lock stays reserved for the grace window so a mid-transfer
+      // reconnect can resume — D's immediate re-grab must be ignored.
       const dLocksBefore = lockCount(D);
       D.s.emit('grabbed', r2);
-      await waitFor(() => lockCount(D) > dLocksBefore, 'R2 D re-grab locks after source left');
+      await WAIT(800);
       record(
-        'R2: lock cleared on source disconnect so re-grab succeeds',
-        lockCount(D) > dLocksBefore,
+        'R2: lock held for grace window after source departure (re-grab ignored)',
+        lockCount(D) === dLocksBefore,
+        `D globalLock count=${lockCount(D)} (expected ${dLocksBefore})`
+      );
+
+      // After LOCK_GRACE_MS (set to 1500 in the test), the room releases the lock
+      // (global-unlock) and the surviving peer can re-grab.
+      await waitFor(() => D.recv.globalUnlock > 0, 'R2 lock grace expires (global-unlock)', 6000);
+      const dLocksAfterUnlock = lockCount(D);
+      D.s.emit('grabbed', r2);
+      await waitFor(
+        () => lockCount(D) > dLocksAfterUnlock,
+        'R2 D re-grab locks after source lock grace expires',
+        6000
+      );
+      record(
+        'R2: lock released after grace so re-grab succeeds',
+        lockCount(D) > dLocksAfterUnlock,
         `D globalLock count=${lockCount(D)}`
       );
     } catch (err) {
@@ -179,15 +213,15 @@ const hasWaitingAfter = (c, before) =>
       await waitFor(() => S.recv.peerDisconnected > 0, 'R4 S notified of departure');
       record('R4: non-source departure notifies remaining peer', S.recv.peerDisconnected > 0);
 
-      // Source re-grabs once the peer is gone — lock must have been cleared even
-      // though the departing socket was not the owner.
+      // The source keeps its grab when a non-source peer leaves (it never lost
+      // ownership) — so its re-grab is a no-op and the lock stays active.
       const sLocksBefore = lockCount(S);
       S.s.emit('grabbed', r4);
-      await waitFor(() => lockCount(S) > sLocksBefore, 'R4 S re-grab locks after peer left');
+      await WAIT(800);
       record(
-        'R4: lock cleared on any departure (not just owner) so source can re-grab',
-        lockCount(S) > sLocksBefore,
-        `S globalLock count=${lockCount(S)}`
+        'R4: source lock preserved when receiver departs (re-grab is a no-op)',
+        lockCount(S) === sLocksBefore,
+        `S globalLock count=${lockCount(S)} (expected ${sLocksBefore})`
       );
     } catch (err) {
       record('R4 completed without internal error', false, String((err && err.message) || err));

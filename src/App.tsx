@@ -84,6 +84,10 @@ export default function App() {
   // transfer after a cancel-and-restart. Never persisted.
   const transferIdRef = useRef<string | null>(null);
   const incomingTransferIdRef = useRef<string | null>(null);
+  // U2: captured before a mid-transfer reset wipes the engine, so a staying
+  // receiver can hand its real progress to the reconnecting sender via the
+  // FILE_META auto-accept path and resume mid-file instead of restarting at 0.
+  const preservedResumeManifestRef = useRef<number[] | null>(null);
   // Throttles the independent rejoin paths (health-check + ICE watchdogs) so
   // flaky ICE can't emit duplicate join-room messages within a 5s window.
   const lastRejoinRef = useRef(0);
@@ -283,7 +287,18 @@ export default function App() {
       setIsSocketConnected(true);
       (window as any).Signaling?.onConnect?.();
       if (roomCodeRef.current.length === 4) {
-        socket.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
+        // Socket reconnected after a drop. The P2P data path almost certainly
+        // died with it, but connectedRef can still be true (dc.onclose/ICE
+        // events lag real network loss by 30s+). If we're already "connected",
+        // reset WebRTC so the room-status:ready re-broadcast rebuilds it
+        // instead of skipping setup on dead channels. resetWebRTCConnection
+        // re-emits join-room itself, so skip the immediate one.
+        if (connectedRef.current) {
+          console.warn("[Reconnect] Socket reconnected but stale connectedRef=true — resetting WebRTC for fresh negotiation");
+          resetWebRTCConnection(isTransferringRef.current);
+        } else {
+          socket.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
+        }
       }
     });
 
@@ -323,14 +338,8 @@ export default function App() {
           return;
         }
         if (role === 'offerer') {
-          if ((window as any).Signaling?.onPeerJoined) {
-            (window as any).Signaling.onPeerJoined('receiver');
-          }
           await setupOfferer();
         } else {
-          if ((window as any).Signaling?.onPeerJoined) {
-            (window as any).Signaling.onPeerJoined('sender');
-          }
           await setupAnswerer();
         }
       } else if (status === 'full') {
@@ -403,7 +412,13 @@ export default function App() {
     socket.on("peer-disconnected", () => {
       console.log("[Signaling] Peer disconnected, resetting room...");
       setMessages(prev => [...prev, "SYSTEM: Peer disconnected. Room reset."]);
-      resetWebRTCConnection();
+      // If the disconnect lands mid-transfer, keep the transfer/role refs so the
+      // resume handshake can re-arm on channel reopen (the server re-broadcasts
+      // global-lock to restore roles once the peer rejoins). Consider transfer
+      // intent beyond isTransferringRef because dc.onclose may have already
+      // cleared that flag while preserving transferRequestedRef/incomingFile.
+      const hasTransferIntent = isTransferringRef.current || transferRequestedRef.current || !!incomingFileRef.current;
+      resetWebRTCConnection(hasTransferIntent);
     });
 
     socket.on("global-lock", ({ sourceId }) => {
@@ -1111,13 +1126,16 @@ export default function App() {
     }
   }, [isSocketConnected, warmUpMediaPipe]);
 
-  const resetWebRTCConnection = useCallback(() => {
-    console.log("Resetting WebRTC Connection...");
+  const resetWebRTCConnection = useCallback((preserveTransferState = false) => {
+    console.log("Resetting WebRTC Connection...", preserveTransferState ? "(preserving mid-transfer state for resume)" : "");
     // Clear ICE watchdog
     if (iceWatchdogRef.current) { clearTimeout(iceWatchdogRef.current); iceWatchdogRef.current = null; }
     // Use cleanup() not destroy() — destroy() closes data channels before the PC does,
     // causing double-close errors and lost onmessage handlers on reconnect.
     if (transferEngineRef.current) {
+      if (preserveTransferState) {
+        preservedResumeManifestRef.current = transferEngineRef.current.getReceivedManifest() ?? null;
+      }
       transferEngineRef.current.cleanup();
       transferEngineRef.current = null;
     }
@@ -1131,33 +1149,40 @@ export default function App() {
     setConnected(false);
     connectedRef.current = false;
     isTransferringFastRef.current = false;
+    // MUST stay false here: pc.close() above fires dc.onclose handlers that call
+    // cancelTransfer() (wiping selectedFiles) whenever isTransferringRef is true.
+    // A mid-transfer reconnect preserves the *intent* (refs kept below) and re-arms
+    // the resume handshake on channel reopen instead.
     isTransferringRef.current = false;
     setIsTransferring(false);
 
-    // Reset all transfer-specific states to prevent stale role configurations on reconnection
-    setIsSource(false);
-    isSourceRef.current = false;
-    setIsGlobalLocked(false);
-    isGlobalLockedRef.current = false;
-    saveDirectoryHandleRef.current = null;
-    hasSaveDirectoryRef.current = false;
-    isChoosingDirectoryRef.current = false;
-    directoryPickerDeclinedRef.current = false;
-    setIncomingFile(null);
-    incomingFileRef.current = null;
-    setIsGrabbedPermanent(false);
+    if (!preserveTransferState) {
+      // Reset all transfer-specific states to prevent stale role configurations on reconnection
+      setIsSource(false);
+      isSourceRef.current = false;
+      setIsGlobalLocked(false);
+      isGlobalLockedRef.current = false;
+      saveDirectoryHandleRef.current = null;
+      hasSaveDirectoryRef.current = false;
+      isChoosingDirectoryRef.current = false;
+      directoryPickerDeclinedRef.current = false;
+      setIncomingFile(null);
+      incomingFileRef.current = null;
+      setIsGrabbedPermanent(false);
 
-    // Reset stale transfer/role refs so a reconnect never reuses prior-session
-    // state: a stale transferRequestedRef blocks fresh drops, a stale pending
-    // drop fires on dead channels, a stale transferId refuses the resume
-    // handshake. selectedFiles is intentionally preserved so the sender can
-    // still answer REQUEST_FILE_META after a reconnect (it is cleared on
-    // explicit leave / transfer completion instead).
-    transferRequestedRef.current = false;
-    pendingDropActionRef.current = false;
-    pendingStartTransferRef.current = false;
-    transferIdRef.current = null;
-    incomingTransferIdRef.current = null;
+      // Reset stale transfer/role refs so a reconnect never reuses prior-session
+      // state: a stale transferRequestedRef blocks fresh drops, a stale pending
+      // drop fires on dead channels, a stale transferId refuses the resume
+      // handshake. selectedFiles is intentionally preserved so the sender can
+      // still answer REQUEST_FILE_META after a reconnect (it is cleared on
+      // explicit leave / transfer completion instead).
+      transferRequestedRef.current = false;
+      pendingDropActionRef.current = false;
+      pendingStartTransferRef.current = false;
+      transferIdRef.current = null;
+      incomingTransferIdRef.current = null;
+      preservedResumeManifestRef.current = null;
+    }
 
     if (socketRef.current && roomCodeRef.current.length === 4) {
       setTimeout(() => {
@@ -1263,9 +1288,20 @@ export default function App() {
         connectedRef.current = false;
         setConnected(false);
         if (isTransferringRef.current) {
-          console.warn("[ICE] ICE failed mid-transfer! Cancelling transfer and showing error.");
-          cancelTransfer();
-          (window as any).showPeerDisconnected?.(true);
+          // Full ICE failure mid-transfer: PRESERVE the transfer intent instead
+          // of cancelling. The peer's network may have blipped — the rejoin below
+          // restarts the handshake and the resume path re-arms on channel reopen.
+          // If the peer never returns, the server's lock-grace flow emits
+          // global-unlock, which resets these refs and releases the room.
+          console.warn("[ICE] ICE failed mid-transfer! Preserving transfer intent for resume.");
+          if (transferEngineRef.current) {
+            preservedResumeManifestRef.current = transferEngineRef.current.getReceivedManifest() ?? null;
+          }
+          transferEngineRef.current?.destroy();
+          transferEngineRef.current = null;
+          isTransferringRef.current = false;
+          isTransferringFastRef.current = false;
+          setIsTransferring(false);
         }
         console.log("[ICE] Failed — tearing down and restarting WebRTC handshake in 1.5s...");
         pc.close();
@@ -1459,9 +1495,21 @@ export default function App() {
         setConnected(false);
         connectedRef.current = false;
         if (isTransferringRef.current) {
-          console.warn("CONSOLE: WebRTC channels closed mid-transfer! Cancelling and showing error.");
-          cancelTransfer();
-          (window as any).showPeerDisconnected?.(true);
+          // Mid-transfer channel loss: PRESERVE the transfer intent instead of
+          // cancelling. The peer's network may have blipped and will reconnect —
+          // the connect/peer-disconnected handlers reset WebRTC (keeping these
+          // refs) and the resume handshake re-arms on channel reopen. If the
+          // peer never returns, the server's lock-grace flow emits global-unlock,
+          // which resets these refs and releases the room.
+          console.warn("CONSOLE: WebRTC channels closed mid-transfer! Preserving transfer intent for resume.");
+          if (transferEngineRef.current) {
+            preservedResumeManifestRef.current = transferEngineRef.current.getReceivedManifest() ?? null;
+          }
+          transferEngineRef.current?.destroy();
+          transferEngineRef.current = null;
+          isTransferringRef.current = false;
+          isTransferringFastRef.current = false;
+          setIsTransferring(false);
         } else {
           transferEngineRef.current?.destroy();
           transferEngineRef.current = null;
@@ -1609,12 +1657,14 @@ export default function App() {
             }
 
             if (transferRequestedRef.current && isGlobalLockedRef.current && !isSourceRef.current) {
-              console.log("CONSOLE: Auto-accepting next file in multi-file transfer");
+              const resumeManifest = preservedResumeManifestRef.current ?? [];
+              preservedResumeManifestRef.current = null;
+              console.log(`CONSOLE: Auto-accepting next file in multi-file transfer${resumeManifest.length ? ` (resuming ${resumeManifest.length} received chunks)` : ''}`);
               isTransferringRef.current = true;
               setIsTransferring(true);
               controlConnRef.current.forEach(c => {
                 if (c.readyState === 'open') {
-                  c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest: [] }));
+                  c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest }));
                 }
               });
               setMessages((prev) => [...prev, `SYSTEM: Auto-downloading next file: ${payload.file.name}`]);
@@ -2097,6 +2147,8 @@ export default function App() {
     // through the real socket instead of showing the dev role picker.
     (window as any)._socketIsConnected = () => !!socketRef.current?.connected;
     (window as any)._socketIsLocked = () => isGlobalLockedRef.current;
+    (window as any)._senderHasSelectedFiles = () => selectedFilesRef.current.length > 0;
+    (window as any)._pendingResumeChunks = () => preservedResumeManifestRef.current?.length ?? 0;
 
     (window as any)._socketJoinRoom = (code: string) => {
       setRoomCode(code);

@@ -2445,7 +2445,17 @@
       if (typeof window.leaveReceiver === 'function') window.leaveReceiver();
     };
 
-    setTimeout(() => {
+    // Cancel any pending sender/receiver screen-transition timer so the LAST
+    // transition wins. Without this, transitionToSender's +320ms timer can fire
+    // after we hide sender-screen, leaving BOTH full-screen layers visible and
+    // overlapped (the receiver animation buries the drop zone). This exact race
+    // fired during reconnects: room-status:ready → transitionToSender, then
+    // reassertRoomLock → global-lock → transitionToReceiver within 320-340ms.
+    if (window.__nexusScreenTransitionTimer) {
+      clearTimeout(window.__nexusScreenTransitionTimer);
+    }
+    window.__nexusScreenTransitionTimer = setTimeout(() => {
+      window.__nexusScreenTransitionTimer = null;
       document.getElementById('receiver-screen').classList.add('visible');
       window.updatePanelToggle?.();
       document.getElementById('rx-dev-panel')?.classList.add('visible');
@@ -2768,7 +2778,16 @@
     document.getElementById('receive-success').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
 
-    setTimeout(() => document.getElementById('sender-screen').classList.add('visible'), 320);
+    // Cancel any pending receiver/sender screen-transition timer so the LAST
+    // transition wins (see transitionToReceiver). Prevents the reconnect race
+    // where both fixed full-screen layers end up .visible and overlap.
+    if (window.__nexusScreenTransitionTimer) {
+      clearTimeout(window.__nexusScreenTransitionTimer);
+    }
+    window.__nexusScreenTransitionTimer = setTimeout(() => {
+      window.__nexusScreenTransitionTimer = null;
+      document.getElementById('sender-screen').classList.add('visible');
+    }, 320);
   };
 
   /* ── FILE HELPERS ── */
@@ -3154,7 +3173,11 @@
 
     // Show receiver screen + simulate button + panel toggle
     // NOTE: gravity well does NOT start here — particles drift freely until a file arrives
-    setTimeout(() => {
+    if (window.__nexusScreenTransitionTimer) {
+      clearTimeout(window.__nexusScreenTransitionTimer);
+    }
+    window.__nexusScreenTransitionTimer = setTimeout(() => {
+      window.__nexusScreenTransitionTimer = null;
       document.getElementById('receiver-screen').classList.add('visible');
       updatePanelToggle();
     }, 340);
