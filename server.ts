@@ -131,7 +131,14 @@ async function startServer() {
           room.peers = room.peers.filter(id => id !== existingPeerSocketId);
           room.peerClientIds.delete(existingPeerSocketId);
           socketToRoom.delete(existingPeerSocketId);
-          
+
+          // The replaced socket owned the room lock — clear it so the reconnecting
+          // session (same clientId) can re-grab once its transport recovers.
+          if (room.sourceId === existingPeerSocketId) {
+            room.isLocked = false;
+            room.sourceId = null;
+          }
+
           const oldSocket = io.sockets.sockets.get(existingPeerSocketId);
           if (oldSocket) {
             oldSocket.leave(roomCode);
@@ -176,12 +183,20 @@ async function startServer() {
         return;
       }
 
-      // If reconnecting, let them resume without kicking
+      // If reconnecting, let them resume without kicking.
+      // Broadcast to every peer so the staying side re-learns roles instantly
+      // instead of waiting on the client-side health-check (8-24s).
       if (isReconnect) {
-        socket.emit('room-status', {
-          status: room.peers.length === 2 ? 'ready' : 'waiting',
-          role: room.offererSocketId === socket.id ? 'offerer' : 'answerer',
-          code: roomCode
+        const status = room.peers.length === 2 ? 'ready' : 'waiting';
+        if (!room.offererSocketId || !room.peers.includes(room.offererSocketId)) {
+          room.offererSocketId = room.peers[0] ?? null;
+        }
+        room.peers.forEach(peerId => {
+          io.to(peerId).emit('room-status', {
+            status,
+            role: room.offererSocketId === peerId ? 'offerer' : 'answerer',
+            code: roomCode
+          });
         });
         console.log(`[Server] Reconnect: ${socket.id} rejoining room ${roomCode}`);
         return;
@@ -279,6 +294,16 @@ async function startServer() {
       room.peers = room.peers.filter(id => id !== socket.id);
       if (room.peerClientIds) {
         room.peerClientIds.delete(socket.id);
+      }
+
+      // Clear any lock/offerer state owned by the departing socket so the room
+      // can be re-locked / re-negotiated after the peer reconnects.
+      if (room.sourceId === socket.id) {
+        room.isLocked = false;
+        room.sourceId = null;
+      }
+      if (room.offererSocketId === socket.id) {
+        room.offererSocketId = room.peers[0] ?? null;
       }
 
       // Notify any remaining peers immediately so they reset signaling/P2P
