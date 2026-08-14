@@ -1,9 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
-import { Smartphone, Laptop, Send, CheckCircle2, AlertCircle, Camera, Hand, File as FileIcon, Upload, Download } from "lucide-react";
+import { Smartphone, Laptop, Send, CheckCircle2, AlertCircle, File as FileIcon, Upload, Download } from "lucide-react";
 import { cn } from "@/src/lib/utils";
-import { Hands, Results, HAND_CONNECTIONS } from "@mediapipe/hands";
-import { drawConnectors, drawLandmarks } from "@mediapipe/drawing_utils";
 import { TransferEngine, TransferTelemetry, CHUNK_SIZE, HEADER_SIZE } from './lib/TransferEngine';
 
 export default function App() {
@@ -45,20 +43,11 @@ export default function App() {
   // so we can delete the partial file if the transfer is cancelled mid-way.
   const streamFileHandleRef = useRef<any>(null);
 
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [isCameraActive, setIsCameraActive] = useState(false);
-  const [isMediaPipeDead, setIsMediaPipeDead] = useState(false);
-
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const connRef = useRef<RTCDataChannel[]>([]);
   const controlConnRef = useRef<RTCDataChannel[]>([]);
   const isTransferringFastRef = useRef(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const handsRef = useRef<Hands | null>(null);
-  const lastGestureRef = useRef<string>("none");
-  const requestRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileChunksRef = useRef<ArrayBuffer[]>([]);
 
@@ -91,7 +80,7 @@ export default function App() {
   // Throttles the independent rejoin paths (health-check + ICE watchdogs) so
   // flaky ICE can't emit duplicate join-room messages within a 5s window.
   const lastRejoinRef = useRef(0);
-  // isGestureDropRef removed — handleDropAction no longer distinguishes gesture vs button
+  // No camera-control path exists — handleDropAction is driven by the Drop button only.
 
   const clientIdRef = useRef<string>("");
   if (!clientIdRef.current) {
@@ -176,26 +165,6 @@ export default function App() {
     };
   }, [isTransferring]);
 
-  const mediaPipeWarmedUp = useRef(false);
-  const warmUpMediaPipe = useCallback(async () => {
-    if (mediaPipeWarmedUp.current || !handsRef.current) return;
-    try {
-      const offscreen = document.createElement('canvas');
-      offscreen.width = 2;
-      offscreen.height = 2;
-      const ctx = offscreen.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, 2, 2);
-      }
-      await handsRef.current.send({ image: offscreen });
-      mediaPipeWarmedUp.current = true;
-      console.log('MediaPipe Hands model warmed up and ready.');
-    } catch (err) {
-      console.warn('MediaPipe warm-up failed (non-fatal):', err);
-    }
-  }, []);
-
   const lastHiddenTimeRef = useRef<number>(0);
 
   // Mobile resilience: visibility change handling to recover from backgrounding
@@ -215,8 +184,6 @@ export default function App() {
         } else if (socketRef.current && socketRef.current.connected && roomCodeRef.current.length === 4) {
           socketRef.current.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
         }
-
-        warmUpMediaPipe();
 
         if (isTransferringRef.current) {
           (window as any).Toast?.show?.('Resuming file transfer from pause point...', 'info');
@@ -243,7 +210,7 @@ export default function App() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [warmUpMediaPipe]);
+  }, []);
 
   // Mobile warning toast when transfer starts
   useEffect(() => {
@@ -267,20 +234,6 @@ export default function App() {
       timeout: 30000,
     });
     socketRef.current = socket;
-
-    const hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-    });
-    hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-    hands.onResults((results) => { onResults(results); });
-    handsRef.current = hands;
-
-    warmUpMediaPipe();
 
     socket.on("connect", () => {
       console.log("Connected to signaling server");
@@ -482,7 +435,7 @@ export default function App() {
       setIsDropped(true);
       setTimeout(() => setIsDropped(false), 2000);
       isGrabbedPermanentRef.current = false;
-      // BUG 9 FIX: Reset transferRequestedRef on unlock so retry drop gestures work
+      // BUG 9 FIX: Reset transferRequestedRef on unlock so retry drops work
       transferRequestedRef.current = false;
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -509,7 +462,6 @@ export default function App() {
     return () => {
       socket.disconnect();
       if (pcRef.current) { pcRef.current.close(); }
-      if (handsRef.current) { handsRef.current.close(); }
       if (transferEngineRef.current) {
         transferEngineRef.current.cleanup();
         transferEngineRef.current = null;
@@ -518,95 +470,6 @@ export default function App() {
       hasSaveDirectoryRef.current = false;
     };
   }, []);
-
-  const startCamera = useCallback(async () => {
-    if (isCameraActive || isMediaPipeDead) return;
-
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      setCameraError(null);
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-          setIsCameraActive(true);
-
-          let isProcessing = false;
-          const processVideo = async () => {
-            if (isMediaPipeDead) return;
-            if (isTransferringFastRef.current) {
-              requestRef.current = requestAnimationFrame(processVideo);
-              return;
-            }
-            if (videoRef.current && handsRef.current && videoRef.current.srcObject && !isProcessing) {
-              if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-                isProcessing = true;
-                try {
-                  await handsRef.current.send({ image: videoRef.current });
-                } catch (err: any) {
-                  console.error("MediaPipe send error:", err);
-                  if (err.message?.includes("abort") || err.message?.includes("memory")) {
-                    setIsMediaPipeDead(true);
-                    setCameraError("Gesture recognition engine crashed. Please refresh the page.");
-                    return;
-                  }
-                  await new Promise(resolve => setTimeout(resolve, 200));
-                } finally {
-                  isProcessing = false;
-                }
-              }
-            }
-            if (videoRef.current && videoRef.current.srcObject && !isMediaPipeDead) {
-              requestRef.current = requestAnimationFrame(processVideo);
-            }
-          };
-          requestRef.current = requestAnimationFrame(processVideo);
-        }
-      } catch (err: any) {
-        console.error("Camera access error:", err);
-        if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-          setCameraError("Camera permission denied. Please check your browser's address bar or settings to allow camera access for this site.");
-        } else {
-          setCameraError(`Camera access failed: ${err.message}`);
-        }
-      }
-    } else {
-      setCameraError("Your browser does not support camera access.");
-    }
-  }, [isCameraActive, isMediaPipeDead]);
-
-  const stopCamera = useCallback(() => {
-    if (!isCameraActive) return;
-    console.log("Stopping camera and clearing canvas...");
-    if (requestRef.current) {
-      cancelAnimationFrame(requestRef.current);
-      requestRef.current = null;
-    }
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-    }
-    if (canvasRef.current) {
-      const ctx = canvasRef.current.getContext("2d");
-      if (ctx) {
-        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        ctx.fillStyle = "#0a0a0a";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-      }
-    }
-    setIsCameraActive(false);
-  }, [isCameraActive]);
-
-  useEffect(() => {
-    const shouldBeOn = joined && !isTransferring && !isGrabbedPermanent &&
-      (selectedFiles.length > 0 || (isGlobalLocked && !isSource));
-    if (shouldBeOn) {
-      startCamera();
-    } else if (isCameraActive) {
-      stopCamera();
-    }
-  }, [joined, selectedFiles, isGlobalLocked, isSource, startCamera, stopCamera, isCameraActive, isTransferring, isGrabbedPermanent]);
 
   // Connection health-check: if we joined but P2P never connected, periodically rejoin.
   // This handles the race where the ICE restart loop stalls (e.g. offer/answer race on LAN).
@@ -633,83 +496,6 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, [joined]);
-
-  const onResults = (results: Results) => {
-    if (!canvasRef.current || !videoRef.current || !joinedRef.current) return;
-    const canvasCtx = canvasRef.current.getContext("2d");
-    if (!canvasCtx) return;
-
-    canvasCtx.save();
-    canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-    canvasCtx.drawImage(results.image, 0, 0, canvasRef.current.width, canvasRef.current.height);
-
-    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-      for (const landmarks of results.multiHandLandmarks) {
-        const wrist = landmarks[0];
-
-        const isFist = [8, 12, 16, 20].every(tipIdx => {
-          const mcpIdx = tipIdx - 3;
-          const tipDist = Math.sqrt(Math.pow(landmarks[tipIdx].x - wrist.x, 2) + Math.pow(landmarks[tipIdx].y - wrist.y, 2));
-          const mcpDist = Math.sqrt(Math.pow(landmarks[mcpIdx].x - wrist.x, 2) + Math.pow(landmarks[mcpIdx].y - wrist.y, 2));
-          return tipDist < mcpDist * 1.2;
-        });
-
-        const extendedFingers = [8, 12, 16, 20].filter(tipIdx => {
-          const mcpIdx = tipIdx - 3;
-          const tipDist = Math.sqrt(Math.pow(landmarks[tipIdx].x - wrist.x, 2) + Math.pow(landmarks[tipIdx].y - wrist.y, 2));
-          const mcpDist = Math.sqrt(Math.pow(landmarks[mcpIdx].x - wrist.x, 2) + Math.pow(landmarks[mcpIdx].y - wrist.y, 2));
-          return tipDist > mcpDist * 1.4;
-        }).length;
-
-        const isPalm = extendedFingers >= 3;
-
-        canvasCtx.fillStyle = "white";
-        canvasCtx.font = "bold 20px sans-serif";
-        let gestureText = "NONE";
-        if (isFist) gestureText = "FIST (GRAB)";
-        if (isPalm) {
-          gestureText = "PALM (DROP)";
-          if (isGlobalLockedRef.current) {
-            setIsGrabbedPermanent(true);
-            isGrabbedPermanentRef.current = true;
-          }
-        }
-        canvasCtx.fillText(`GESTURE: ${gestureText}`, 20, 40);
-        canvasCtx.fillText(`EXTENDED: ${extendedFingers}/4`, 20, 70);
-
-        let color = "#00FF00";
-        if (isFist) color = "#3b82f6";
-        if (isPalm && isGlobalLockedRef.current && !isSourceRef.current) color = "#10b981";
-        if (isPalm && isSourceRef.current && isGlobalLockedRef.current) color = "#f59e0b";
-
-        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color, lineWidth: 5 });
-        drawLandmarks(canvasCtx, landmarks, { color: isFist ? "#ffffff" : "#FF0000", lineWidth: 2 });
-
-        if (!isGlobalLockedRef.current) {
-          if (isFist && lastGestureRef.current !== "fist" && selectedFilesRef.current.length > 0) {
-            console.log("GESTURE: GRAB DETECTED - Files:", selectedFilesRef.current.length);
-            lastGestureRef.current = "fist";
-            document.getElementById('btn-grab')?.click();
-          } else if (!isFist) {
-            lastGestureRef.current = "none";
-          }
-        } else {
-          if (!isSourceRef.current) {
-            if (isPalm && lastGestureRef.current !== "palm") {
-              console.log("GESTURE: DROP DETECTED - Triggering drop action");
-              lastGestureRef.current = "palm";
-              handleDropAction();
-            } else if (!isPalm) {
-              if (lastGestureRef.current === "palm") {
-                lastGestureRef.current = "none";
-              }
-            }
-          }
-        }
-      }
-    }
-    canvasCtx.restore();
-  };
 
   const getCurrentFile = useCallback((): File | null => {
     const files = selectedFilesRef.current;
@@ -778,7 +564,7 @@ export default function App() {
     } catch (err) {
       console.error("Grab action failed:", err);
       setSelectedFiles([]);
-      simulateDrop();
+      socketRef.current?.emit('dropped', roomCodeRef.current);
     }
   };
 
@@ -923,7 +709,7 @@ export default function App() {
     isChoosingDirectoryRef.current = false;
     directoryPickerDeclinedRef.current = false;
 
-    // Path 3 — OPFS (gesture drop / mobile)
+    // Path 3 — OPFS (drop-button / mobile)
     if (opfsFileHandleRef.current) {
       const nameToDelete = incomingFileRef.current?.name;
       if (nameToDelete && navigator.storage?.getDirectory) {
@@ -1118,13 +904,6 @@ export default function App() {
       }
     }
   };
-
-  useEffect(() => {
-    if (isSocketConnected && joinedRef.current && roomCodeRef.current && socketRef.current) {
-      console.log("Socket reconnected, warm up MediaPipe again");
-      warmUpMediaPipe();
-    }
-  }, [isSocketConnected, warmUpMediaPipe]);
 
   const resetWebRTCConnection = useCallback((preserveTransferState = false) => {
     console.log("Resetting WebRTC Connection...", preserveTransferState ? "(preserving mid-transfer state for resume)" : "");
@@ -1615,8 +1394,8 @@ export default function App() {
             }
 
             // Save location is chosen in handleDropAction (button) or falls through to
-            // OPFS (gesture path). Do not call showSaveFilePicker here — FILE_META
-            // arrives via WebRTC message, which is not a browser user-gesture context.
+            // OPFS (drop-button path). Do not call showSaveFilePicker here — FILE_META
+            // arrives via WebRTC message, which is not a browser user action context.
 
             if (saveDirectoryHandleRef.current) {
               try {
@@ -1670,7 +1449,7 @@ export default function App() {
               setMessages((prev) => [...prev, `SYSTEM: Auto-downloading next file: ${payload.file.name}`]);
             } else {
               transferRequestedRef.current = false;
-              setMessages((prev) => [...prev, `SYSTEM: Incoming file ready: ${payload.file.name}. Perform DROP gesture to download.`]);
+              setMessages((prev) => [...prev, `SYSTEM: Incoming file ready: ${payload.file.name}. Click DROP (Receive) to download.`]);
             }
 
           } else if (payload.type === "START_TRANSFER") {
@@ -2137,10 +1916,6 @@ export default function App() {
   }, [transferPhase]);
 
   useEffect(() => {
-    if (cameraError) (window as any).showCameraDeniedBanner?.();
-  }, [cameraError]);
-
-  useEffect(() => {
     // ── Expose socket hooks for Ch2/Ch3 native scripts ──
     // Ch2's joinRoom() checks _socketIsConnected and _socketJoinRoom before
     // falling back to the role-picker UI. Exposing these ensures Ch2/Ch3 route
@@ -2303,12 +2078,8 @@ export default function App() {
 
   }, []);
 
-  return (
-    <div style={{ display: "none", position: "fixed", top: 0, left: 0, zIndex: -1 }} aria-hidden="true">
-      <video ref={videoRef} playsInline muted style={{ width: 320, height: 240 }} />
-      <canvas ref={canvasRef} width={320} height={240} />
-    </div>
-  );
+  return null;
 }
+
 
 
