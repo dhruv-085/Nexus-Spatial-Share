@@ -2320,10 +2320,21 @@
     }
     return ph;
   }
-  function checkDevTip(hasCode){
+  function getDeviceAccessURL(code){
+    let host = window.location.hostname;
+    const protocol = window.location.protocol;
+    const port = window.location.port ? (':' + window.location.port) : '';
+    if ((host === 'localhost' || host === '127.0.0.1') && window.__SERVER_LOCAL_IP__ && window.__SERVER_LOCAL_IP__ !== '127.0.0.1') {
+      host = window.__SERVER_LOCAL_IP__;
+    }
+    return `${protocol}//${host}${port}${window.location.pathname}?room=${code}`;
+  }
+
+  function checkDevTip(hasCode, url){
     const tipEl = document.getElementById('qr-dev-tip');
     if(!tipEl) return;
     if(hasCode && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')){
+      tipEl.textContent = `Mobile link: ${url}`;
       tipEl.style.display = 'block';
     } else {
       tipEl.style.display = 'none';
@@ -2336,14 +2347,14 @@
     if(code.length<4){
       if(qrInstance){out.innerHTML='';qrInstance=null;}
       qrPlaceholder(out).style.display='';
-      checkDevTip(false);
+      checkDevTip(false, '');
       return;
     }
     out.innerHTML='';qrInstance=null;
-    const url = `${window.location.origin}${window.location.pathname}?room=${code}`;
+    const url = getDeviceAccessURL(code);
     try{qrInstance=new QRCode(out,{text:url,width:150,height:150,colorDark:'#050505',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});}
     catch(e){const ph=qrPlaceholder(out);ph.textContent=code;ph.style.display='';}
-    checkDevTip(true);
+    checkDevTip(true, url);
   }
 
   /* QR Scanner */

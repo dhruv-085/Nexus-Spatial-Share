@@ -2,10 +2,25 @@ import express from "express";
 import { createServer as createHttpServer } from "http";
 import { createServer as createHttpsServer } from "https";
 import fs from "fs";
+import os from "os";
 import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { ExpressPeerServer } from "peer";
+
+function getLocalIPAddress(): string {
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const net of interfaces[name] || []) {
+        if (net.family === 'IPv4' && !net.internal) {
+          return net.address;
+        }
+      }
+    }
+  } catch (_) {}
+  return '127.0.0.1';
+}
 
 async function startServer() {
   const app = express();
@@ -465,7 +480,13 @@ async function startServer() {
   window.__vite_plugin_react_preamble_installed__ = true;
 </script>
           `;
-          html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + preamble);
+          const localIP = getLocalIPAddress();
+          const ipScript = `\n<script>window.__SERVER_LOCAL_IP__ = "${localIP}";</script>`;
+          html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + preamble + ipScript);
+        } else {
+          const localIP = getLocalIPAddress();
+          const ipScript = `\n<script>window.__SERVER_LOCAL_IP__ = "${localIP}";</script>`;
+          html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + ipScript);
         }
         console.log(`[DevServer] Transformed HTML length: ${html.length}`);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
@@ -481,14 +502,26 @@ async function startServer() {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        let html = fs.readFileSync(indexPath, 'utf-8');
+        const localIP = getLocalIPAddress();
+        const ipScript = `\n<script>window.__SERVER_LOCAL_IP__ = "${localIP}";</script>`;
+        if (!html.includes('__SERVER_LOCAL_IP__')) {
+          html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + ipScript);
+        }
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
+      } else {
+        res.sendFile(indexPath);
+      }
     });
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     const protocol = isHttps ? "https" : "http";
+    const localIP = getLocalIPAddress();
     console.log(`Nexus Server running on ${protocol}://localhost:${PORT}`);
-    console.log(`To access on your phone, go to: ${protocol}://YOUR_LOCAL_IP:${PORT}`);
+    console.log(`To access on your phone, go to: ${protocol}://${localIP}:${PORT}`);
   });
 }
 
