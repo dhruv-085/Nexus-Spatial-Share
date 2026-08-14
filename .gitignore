@@ -8,4 +8,32 @@ coverage/
 !.env.example
 
 # Compound Engineering local config
-.compound-engineering/*.local.yaml
+.compound-engineering/
+
+# Certificates & Keys
+*.crt
+*.key
+
+# Scratch & Debug scripts / dumps
+*.cjs
+*.mjs
+*.py
+*.bin
+*.txt
+.temp*
+test_*
+opencode.json
+
+
+
+# Scratch & Design folders
+Screen Shots/
+UI UX files/
+docs/
+.agents/
+Oldindex.html
+
+# Markdown docs (except README.md)
+*.md
+!README.md
+
