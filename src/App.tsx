@@ -1212,7 +1212,8 @@ export default function App() {
         // mobile hotspot where mDNS candidates silently fail). Force a full rejoin.
         if (iceWatchdogRef.current) clearTimeout(iceWatchdogRef.current);
         iceWatchdogRef.current = setTimeout(() => {
-          if (pc.iceConnectionState === 'checking' && !connectedRef.current) {
+          if (pc.iceConnectionState === 'checking' && !connectedRef.current && Date.now() - lastRejoinRef.current >= 5000) {
+            lastRejoinRef.current = Date.now();
             console.warn('[ICE] Watchdog: stuck in checking for 10s — forcing rejoin');
             pc.close();
             if (pcRef.current === pc) {
@@ -1275,7 +1276,8 @@ export default function App() {
           pendingCandidatesRef.current = [];
         }
         setTimeout(() => {
-          if (!connectedRef.current && socketRef.current?.connected && roomCodeRef.current.length === 4) {
+          if (!connectedRef.current && socketRef.current?.connected && roomCodeRef.current.length === 4 && Date.now() - lastRejoinRef.current >= 5000) {
+            lastRejoinRef.current = Date.now();
             console.log("[ICE] Re-emitting join-room to restart signaling...");
             socketRef.current.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
           }
@@ -1340,10 +1342,19 @@ export default function App() {
               .forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
           } else if (!transferRequestedRef.current) {
             console.log("CONSOLE: Channels reopened with pending drop and meta present — resuming drop action");
-            // Mark requested and let the resume block below send the single
-            // START_TRANSFER — handleDropAction() here would send a second one.
-            pendingDropActionRef.current = false;
-            transferRequestedRef.current = true;
+            if (transferEngineRef.current) {
+              // Mark requested and let the resume block below send the single
+              // START_TRANSFER — handleDropAction() here would send a second one.
+              pendingDropActionRef.current = false;
+              transferRequestedRef.current = true;
+            } else {
+              // Engine was nulled without clearing the meta (onclose's
+              // non-transferring branch) — re-request meta so the FILE_META
+              // handler rebuilds the receiver engine and resolves the drop.
+              console.log("CONSOLE: Channels reopened with pending drop and meta but no engine — re-requesting meta to rebuild receiver");
+              controlConnRef.current.filter(c => c.readyState === 'open')
+                .forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
+            }
           }
         }
 
