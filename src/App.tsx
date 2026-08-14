@@ -235,6 +235,13 @@ export default function App() {
     });
     socketRef.current = socket;
 
+    socket.on("server-info", (data: { localIP?: string }) => {
+      if (data && data.localIP) {
+        (window as any).__SERVER_LOCAL_IP__ = data.localIP;
+        (window as any).updateQR?.();
+      }
+    });
+
     socket.on("connect", () => {
       console.log("Connected to signaling server");
       setIsSocketConnected(true);

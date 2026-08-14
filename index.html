@@ -78,6 +78,23 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Nexus Spatial</title>
+  <script>
+    (function() {
+      try {
+        fetch('/api/server-info')
+          .then(function(res) { return res.json(); })
+          .then(function(data) {
+            if (data && data.localIP) {
+              window.__SERVER_LOCAL_IP__ = data.localIP;
+              if (typeof window.updateQR === 'function') {
+                window.updateQR();
+              }
+            }
+          })
+          .catch(function() {});
+      } catch (_) {}
+    })();
+  </script>
   <!-- Ch7: Socket.IO wiring active -->
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -2575,6 +2592,7 @@
   }
 
   window._debugGlobe = () => activeEdgeProgress;
+  window.updateQR = updateQR;
   kick();
   initURLRoomJoin();
 })();

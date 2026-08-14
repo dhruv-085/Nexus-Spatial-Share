@@ -54,7 +54,12 @@ async function startServer() {
   const peerServer = ExpressPeerServer(httpServer, {
     path: "/"
   });
-  app.use("/peerjs", peerServer);
+  // Express endpoint for client server-info lookup
+  app.get("/api/server-info", (_req, res) => {
+    const localIP = getLocalIPAddress();
+    const protocol = isHttps ? "https" : "http";
+    res.json({ localIP, protocol, port: PORT });
+  });
 
   // Extend room structure to track precise peer lists for WebRTC
   const rooms = new Map<string, { isLocked: boolean, sourceId: string | null, sourceClientId: string | null, peers: string[], offererSocketId: string | null, peerClientIds?: Map<string, string> }>();
@@ -93,6 +98,11 @@ async function startServer() {
 
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
+    socket.emit("server-info", {
+      localIP: getLocalIPAddress(),
+      protocol: isHttps ? "https" : "http",
+      port: PORT
+    });
 
     socket.on("join-room", (data) => {
       let roomCode: string;
@@ -460,7 +470,7 @@ async function startServer() {
     app.get('*', async (req, res, next) => {
       const url = req.originalUrl;
       // Let Vite HMR and module loading fall through to vite.middlewares
-      if (url.startsWith('/src/') || url.startsWith('/@') || url.includes('.')) {
+      if (url.startsWith('/src/') || url.startsWith('/@') || /\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|json|map)$/i.test(url)) {
         return next();
       }
       console.log(`[DevServer] Intercepted HTML request: ${url}`);
