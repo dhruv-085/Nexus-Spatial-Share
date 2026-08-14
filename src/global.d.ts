@@ -22,7 +22,6 @@ declare global {
     updateReceiverProgress?: (progress: number, speedMbps: number) => void;
     setTransferPhase?: (phase: 'idle' | 'requested' | 'active' | 'stalled') => void;
     getTransferPhase?: () => 'idle' | 'requested' | 'active' | 'stalled';
-    showCameraDeniedBanner?: () => void;
     showSignalingError?: () => void;
     _socketIsConnected?: () => boolean;
     _socketJoinRoom?: (code: string) => void;

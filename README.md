@@ -1,19 +1,14 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
 # Nexus Spatial Share
 
-Nexus Spatial Share is an advanced, high-speed, peer-to-peer file sharing web application that uses real-time hand gesture tracking to coordinate and initiate direct transfers. By leveraging webcam-based gesture detection (via Google MediaPipe) and direct WebRTC connection pipelines, users can interactively "grab" files to queue them for sending and "drop" them to trigger direct downloads on connected devices.
+Nexus Spatial Share is an advanced, high-speed, peer-to-peer file sharing web application that uses direct WebRTC connection pipelines to coordinate and initiate transfers between devices. Users can interactively "grab" files to queue them for sending and "drop" them to trigger direct downloads on connected devices.
 
 ---
 
 ## ✨ Key Features
 
-1. **Spatial Gesture Interface**:
-   - **Grab (Fist)**: Curled hand gesture initiates a room locking sequence and prepares files to be sent.
-   - **Drop (Open Palm)**: Open hand gesture registers a drop intent on the receiving device to start writing incoming byte buffers.
-   - **Privacy-First Camera Lifecycle**: The webcam is only turned on when files are selected/expected and turns off immediately during file transfer to conserve battery and preserve privacy.
+1. **Interactive Spatial Interface**:
+   - **Grab (Send)**: Clicking Grab initiates a room locking sequence and prepares files to be sent.
+   - **Drop (Receive)**: Clicking Drop registers a drop intent on the receiving device to start writing incoming byte buffers.
 
 2. **Custom High-Speed Transfer Engine**:
    - **Striped Multi-Channel WebRTC**: Splits transmission over 3 concurrent, high-throughput binary data channels plus a dedicated control channel for ACKs/NACKs and metadata.
@@ -41,7 +36,7 @@ Nexus Spatial Share is an advanced, high-speed, peer-to-peer file sharing web ap
 
 ### 📋 Prerequisites
 - **Node.js** (v18 or higher recommended)
-- A modern web browser with camera access (Chrome, Edge, Firefox, or Safari)
+- A modern web browser (Chrome, Edge, Firefox, or Safari)
 
 ### 🛠️ Installation & Setup
 1. **Clone the Repository**
@@ -56,7 +51,7 @@ Nexus Spatial Share is an advanced, high-speed, peer-to-peer file sharing web ap
    ```
 
 3. **Secure Context Configuration (Optional but Recommended)**
-   Landmark tracking (webcam) and File System Access APIs require a **Secure Context** (`https://` or `localhost`). If you want to connect a phone to your computer's local IP, the server **must** run on HTTPS.
+   File System Access APIs require a **Secure Context** (`https://` or `localhost`). If you want to connect a phone to your computer's local IP, running the server over HTTPS is recommended.
    To run in HTTPS locally:
    - Generate local SSL certificates (`cert.key` and `cert.crt`) in the root directory.
    - You can use tools like `mkcert` or OpenSSL:
@@ -82,7 +77,6 @@ Nexus Spatial Share is an advanced, high-speed, peer-to-peer file sharing web ap
 
 ## 🛠️ Architecture & Tech Stack
 - **Frontend**: React 19, Tailwind CSS, Lucide Icons, Vite
-- **Gesture Landmark Tracking**: Google MediaPipe Hands API
 - **Signaling Broker**: Node.js/Express, Socket.io, ExpressPeerServer (PeerJS)
 - **WebRTC Data Engine**: Native RTCPeerConnection and RTCDataChannel, `lz4js` compression, WASM `xxhash` for chunk checksum hashing
 
