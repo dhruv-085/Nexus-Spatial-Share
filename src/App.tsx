@@ -2,11 +2,62 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { Smartphone, Laptop, Send, CheckCircle2, AlertCircle, File as FileIcon, Upload, Download } from "lucide-react";
 import { cn } from "@/src/lib/utils";
-import { TransferEngine, TransferTelemetry, CHUNK_SIZE, HEADER_SIZE } from './lib/TransferEngine';
+import { TransferEngine, TransferTelemetry, CHUNK_SIZE, HEADER_SIZE, sanitizeFilename } from './lib/TransferEngine';
+
+// Background-keep-alive audio: a multi-second silent WAV. A 2-sample clip
+// finishes almost instantly and browsers don't count it as "actively playing
+// audio", so the mobile tab can still be discarded while backgrounded with the
+// file picker open. A longer looping clip keeps the tab alive so the socket.io
+// reconnect (and WebRTC resume handshake) happens in the background, seamless —
+// no reload, no tab-restore rejoin.
+function makeSilentWav(durationSec = 2, sampleRate = 8000): string {
+  const numSamples = sampleRate * durationSec;
+  const bytesPerSample = 1; // 8-bit PCM, silence = 0x80
+  const dataSize = numSamples * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const writeAscii = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeAscii(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(8, 'WAVE');
+  writeAscii(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true); // byte rate
+  view.setUint16(32, bytesPerSample, true); // block align
+  view.setUint16(34, 8, true); // bits per sample
+  writeAscii(36, 'data');
+  view.setUint32(40, dataSize, true);
+  for (let i = 0; i < numSamples; i++) view.setUint8(44 + i, 0x80);
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return 'data:audio/wav;base64,' + btoa(binary);
+}
 
 export default function App() {
 
-  const [roomCode, setRoomCode] = useState("");
+  const [roomCode, setRoomCode] = useState(() => {
+    if (typeof window === 'undefined') return "";
+    const fromUrl = new URLSearchParams(window.location.search).get('room');
+    const autoJoin = new URLSearchParams(window.location.search).get('auto');
+    const fromStorage = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('nexus_active_room') : null;
+    const pendingRestore = (typeof sessionStorage !== 'undefined') && sessionStorage.getItem('nexus_pending_restore') === '1';
+    if (fromUrl && autoJoin === '1' && /^\d{4}$/.test(fromUrl)) {
+      return fromUrl;
+    }
+    if (fromUrl && /^\d{4}$/.test(fromUrl) && (pendingRestore || fromStorage === fromUrl)) {
+      return fromUrl;
+    }
+    if (fromStorage && /^\d{4}$/.test(fromStorage) && autoJoin === '1') {
+      return fromStorage;
+    }
+    return "";
+  });
   const [joined, setJoined] = useState(false);
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState<string[]>([]);
@@ -29,7 +80,7 @@ export default function App() {
   const [isTransferStalled, setIsTransferStalled] = useState(false);
   const [telemetry, setTelemetry] = useState<TransferTelemetry | null>(null);
   const transferEngineRef = useRef<TransferEngine | null>(null);
-  const [incomingFile, setIncomingFile] = useState<{ name: string, type: string, size: number } | null>(null);
+  const [incomingFile, setIncomingFile] = useState<{ name: string, type: string, size: number, batchIndex?: number, batchCount?: number } | null>(null);
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
   // opfsHandle: FileSystemFileHandle kept alive until user saves — do NOT delete OPFS at completion,
   // only after a successful download. Deleting it early invalidates the File object → "Check internet connection".
@@ -43,6 +94,130 @@ export default function App() {
   // so we can delete the partial file if the transfer is cancelled mid-way.
   const streamFileHandleRef = useRef<any>(null);
 
+  // Registry for Blob URLs created during transfers and downloads to prevent memory & cache accumulation
+  const blobUrlRegistryRef = useRef<Set<string>>(new Set());
+
+  const createTrackedBlobUrl = (blob: Blob | File): string => {
+    const url = URL.createObjectURL(blob);
+    blobUrlRegistryRef.current.add(url);
+    return url;
+  };
+
+  const revokeTrackedBlobUrl = (url: string) => {
+    if (blobUrlRegistryRef.current.has(url)) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+      blobUrlRegistryRef.current.delete(url);
+    }
+  };
+
+  const revokeAllTrackedBlobUrls = () => {
+    blobUrlRegistryRef.current.forEach((url) => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+    });
+    blobUrlRegistryRef.current.clear();
+  };
+
+  const sanitizeOpfsStorage = async (keepNames: Set<string> = new Set()) => {
+    if (typeof navigator === 'undefined' || !navigator.storage || !navigator.storage.getDirectory) {
+      return;
+    }
+    try {
+      const root = await navigator.storage.getDirectory();
+      // @ts-ignore
+      if (typeof root.entries === 'function') {
+        // @ts-ignore
+        for await (const [name, handle] of root.entries()) {
+          if (!keepNames.has(name)) {
+            console.log(`[Storage] Sanitizing/purging orphaned OPFS file: ${name}`);
+            try {
+              await root.removeEntry(name, { recursive: true });
+            } catch (delErr) {
+              try {
+                if (handle && handle.kind === 'file' && typeof (handle as any).createWritable === 'function') {
+                  const wr = await (handle as any).createWritable({ keepExistingData: false });
+                  await wr.truncate(0);
+                  await wr.close();
+                }
+              } catch (_) {}
+              await root.removeEntry(name, { recursive: true }).catch(() => {});
+            }
+          }
+        }
+      // @ts-ignore
+      } else if (typeof root.keys === 'function') {
+        // @ts-ignore
+        for await (const name of root.keys()) {
+          if (!keepNames.has(name)) {
+            console.log(`[Storage] Sanitizing/purging orphaned OPFS file: ${name}`);
+            await root.removeEntry(name, { recursive: true }).catch(() => {});
+          }
+        }
+      } else if (Symbol.asyncIterator in root) {
+        // @ts-ignore
+        for await (const [name] of root) {
+          if (!keepNames.has(name)) {
+            console.log(`[Storage] Sanitizing/purging orphaned OPFS file: ${name}`);
+            await root.removeEntry(name, { recursive: true }).catch(() => {});
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[Storage] sanitizeOpfsStorage failed:', err);
+    }
+  };
+
+  const purgePartialTransferFileAsync = async (fileName?: string) => {
+    const nameToDelete = fileName || incomingFileRef.current?.name;
+
+    // Path 1 — showSaveFilePicker (user chose an explicit save location)
+    if (streamFileHandleRef.current) {
+      const fh = streamFileHandleRef.current;
+      streamFileHandleRef.current = null;
+      // FileSystemFileHandle.remove() available in Chrome 117+
+      if (typeof fh.remove === 'function') {
+        fh.remove().catch(() => {});
+      }
+    }
+
+    // Path 2 — showDirectoryPicker (silent save to chosen folder)
+    if (saveDirectoryHandleRef.current && nameToDelete) {
+      saveDirectoryHandleRef.current.removeEntry(nameToDelete).catch(() => {});
+    }
+    saveDirectoryHandleRef.current = null;
+    hasSaveDirectoryRef.current = false;
+    isChoosingDirectoryRef.current = false;
+    directoryPickerDeclinedRef.current = false;
+
+    // Path 3 — OPFS (drop-button / mobile)
+    if (nameToDelete && typeof navigator !== 'undefined' && navigator.storage?.getDirectory) {
+      try {
+        const root = await navigator.storage.getDirectory();
+        try {
+          await root.removeEntry(nameToDelete);
+          console.log(`[Storage] Purged partial OPFS file on cancel: ${nameToDelete}`);
+        } catch (removeErr) {
+          console.warn(`[Storage] removeEntry failed on cancel, attempting truncate fallback for "${nameToDelete}":`, removeErr);
+          try {
+            const fh = await root.getFileHandle(nameToDelete, { create: false });
+            if (fh && typeof (fh as any).createWritable === 'function') {
+              const wr = await (fh as any).createWritable({ keepExistingData: false });
+              await wr.truncate(0);
+              await wr.close();
+            }
+          } catch (_) {}
+          await root.removeEntry(nameToDelete).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[Storage] Error accessing OPFS directory for purge:', err);
+      }
+    }
+    opfsFileHandleRef.current = null;
+  };
+
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const connRef = useRef<RTCDataChannel[]>([]);
@@ -52,12 +227,12 @@ export default function App() {
   const fileChunksRef = useRef<ArrayBuffer[]>([]);
 
   const connectedRef = useRef(false);
-  const roomCodeRef = useRef("");
+  const roomCodeRef = useRef(roomCode);
   const joinedRef = useRef(false);
 
   const isGlobalLockedRef = useRef(false);
   const isSourceRef = useRef(false);
-  const incomingFileRef = useRef<{ name: string, type: string, size: number } | null>(null);
+  const incomingFileRef = useRef<{ name: string, type: string, size: number, batchIndex?: number, batchCount?: number } | null>(null);
   const selectedFilesRef = useRef<File[]>([]);
   const currentFileIndexRef = useRef(0);
   const isTransferringRef = useRef(false);
@@ -80,7 +255,26 @@ export default function App() {
   // Throttles the independent rejoin paths (health-check + ICE watchdogs) so
   // flaky ICE can't emit duplicate join-room messages within a 5s window.
   const lastRejoinRef = useRef(0);
+  // BUG FIX (Bug 2): When WebRTC channels die mid-transfer, dc.onclose resets
+  // isTransferringRef to false (to prevent double-cancel). But then when the
+  // socket reconnects and server emits room-status:waiting, hasTransferIntent
+  // evaluates false — causing transitionToSender() to fire and flip the UI back
+  // to the drag-and-drop screen. This ref survives the dc.onclose reset and is
+  // only cleared when the new WebRTC channels fully open (resume confirmed) or
+  // when the user explicitly leaves / cancels. It prevents any screen transition
+  // during the reconnect window, making the disconnect completely silent to the UI.
+  const midTransferDisconnectRef = useRef(false);
+  // KTD2: synchronous screen identity, set by index.html's transition
+  // functions (window.__nexusCurrentScreen). Replaces the +340ms-delayed
+  // receiver-screen.visible DOM-class read that was race-dependent.
+  const lastScreenRef = useRef<'home' | 'sender' | 'receiver'>('home');
   // No camera-control path exists — handleDropAction is driven by the Drop button only.
+
+  // Cold-Start Wakeup & Keepalive State Controller
+  const wakeupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wakeupIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeWakeupToastRef = useRef<any>(null);
+  const isWakingUpRef = useRef<boolean>(false);
 
   const clientIdRef = useRef<string>("");
   if (!clientIdRef.current) {
@@ -113,7 +307,7 @@ export default function App() {
 
   useEffect(() => {
     if (typeof Audio !== 'undefined') {
-      const a = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+      const a = new Audio(makeSilentWav());
       a.loop = true;
       backgroundAudioRef.current = a;
     }
@@ -173,7 +367,24 @@ export default function App() {
       if (document.visibilityState === 'hidden') {
         lastHiddenTimeRef.current = Date.now();
         console.log('[Visibility] App went to background');
+        // Re-assert the silent keep-alive audio: the browser may have paused it.
+        // While it is playing, the mobile tab is not discarded on backgrounding —
+        // so the socket.io connection and WebRTC resume handshake keep running
+        // seamlessly in the background instead of a reload + rejoin.
+        if (typeof (window as any).startBackgroundAudio === 'function') {
+          (window as any).startBackgroundAudio();
+        }
+        // Mobile tab-restore: while the page is backgrounded (file picker open
+        // or screen off) the browser may discard and reload the tab. Record the
+        // intent so initURLRoomJoin() rejoins the room instead of dropping the
+        // user to an empty home screen. Cleared again on return-to-foreground,
+        // so only a backgrounded reload restores — plain visits and manual
+        // visible refreshes keep loading empty.
+        if (joinedRef.current && roomCodeRef.current.length === 4) {
+          try { sessionStorage.setItem('nexus_pending_restore', '1'); } catch (_) {}
+        }
       } else if (document.visibilityState === 'visible') {
+        try { sessionStorage.removeItem('nexus_pending_restore'); } catch (_) {}
         const bgDuration = lastHiddenTimeRef.current > 0 ? Date.now() - lastHiddenTimeRef.current : 0;
         console.log(`[Visibility] App returned from background after ${Math.round(bgDuration / 1000)}s`);
         lastHiddenTimeRef.current = 0;
@@ -181,18 +392,33 @@ export default function App() {
         if (socketRef.current && !socketRef.current.connected) {
           console.log('[Visibility] Socket disconnected while in background — reconnecting...');
           socketRef.current.connect();
-        } else if (socketRef.current && socketRef.current.connected && roomCodeRef.current.length === 4) {
+        } else if (socketRef.current && socketRef.current.connected && joinedRef.current && roomCodeRef.current.length === 4) {
           socketRef.current.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
         }
 
-        if (isTransferringRef.current) {
+        const hasActiveTransferIntent = isTransferringRef.current || (isGlobalLockedRef.current && (transferRequestedRef.current || preservedResumeManifestRef.current !== null || (isSourceRef.current && !!transferIdRef.current)));
+        if (hasActiveTransferIntent) {
           (window as any).Toast?.show?.('Resuming file transfer from pause point...', 'info');
+          if (isSourceRef.current) {
+            const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
+            if (currentFile) {
+              (window as any).showSenderProgress?.(currentFile, currentFileIndexRef.current, selectedFilesRef.current.length);
+            }
+          } else if (incomingFileRef.current) {
+            const inc = incomingFileRef.current;
+            (window as any).showReceiverProgress?.(inc.name, inc.size, inc.batchIndex, inc.batchCount);
+          }
           const openCtrl = controlConnRef.current.filter(c => c.readyState === 'open');
           if (openCtrl.length > 0) {
-            if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && transferRequestedRef.current && transferEngineRef.current) {
-              const resumeManifest = transferEngineRef.current.getReceivedManifest();
-              console.log(`[Visibility] Auto-sending START_TRANSFER with ${resumeManifest.length} existing chunks`);
-              openCtrl.forEach(c => c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest })));
+            if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && (transferRequestedRef.current || preservedResumeManifestRef.current !== null)) {
+              if (transferEngineRef.current) {
+                const resumeManifest = preservedResumeManifestRef.current ?? transferEngineRef.current.getReceivedManifest();
+                console.log(`[Visibility] Auto-sending START_TRANSFER with ${resumeManifest.length} existing chunks`);
+                openCtrl.forEach(c => c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest })));
+              } else {
+                console.log("[Visibility] Receiver engine reset during backgrounding — requesting FILE_META to rebuild");
+                openCtrl.forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
+              }
             } else if (isSourceRef.current && transferIdRef.current) {
               // U4 (R1/R2): this peer is the sender returning to the foreground.
               // The receiver is the authority on progress, so probe it for its
@@ -223,10 +449,68 @@ export default function App() {
   }, [isTransferring]);
 
   useEffect(() => {
+    const customServerUrl = (import.meta as any).env?.VITE_SERVER_URL;
     const isDevPort = !!window.location.port && window.location.port !== '3000' && window.location.port !== '80' && window.location.port !== '443';
-    const SERVER_URL = isDevPort
+    const SERVER_URL = customServerUrl || (isDevPort
       ? `${window.location.protocol}//${window.location.hostname}:3000`
-      : `${window.location.protocol}//${window.location.host}`;
+      : `${window.location.protocol}//${window.location.host}`);
+
+    // Pre-warm container immediately on page load via lightweight HTTP request
+    try {
+      fetch(`${SERVER_URL}/healthz`, { method: 'GET', mode: 'cors' }).catch(() => {});
+    } catch (_) {}
+
+    // Expose global retry helper for UI and toast buttons
+    (window as any).retrySignaling = () => {
+      try {
+        fetch(`${SERVER_URL}/healthz`, { method: 'GET', mode: 'cors' }).catch(() => {});
+        if (socketRef.current) {
+          if (!socketRef.current.connected) {
+            socketRef.current.connect();
+          }
+        }
+      } catch (_) {}
+    };
+
+    // Cold-start wakeup toast timer (3.0s grace window before showing toast)
+    if (wakeupTimeoutRef.current) clearTimeout(wakeupTimeoutRef.current);
+    if (wakeupIntervalRef.current) clearInterval(wakeupIntervalRef.current);
+
+    wakeupTimeoutRef.current = setTimeout(() => {
+      if (!socketRef.current?.connected) {
+        isWakingUpRef.current = true;
+        let remainingSec = 40;
+        const initialMsg = `⚡ Waking up signaling network (free tier spin-up)... ~${remainingSec}s remaining`;
+        
+        activeWakeupToastRef.current = (window as any).Toast?.show?.(initialMsg, 'info', 0);
+
+        wakeupIntervalRef.current = setInterval(() => {
+          remainingSec--;
+          if (remainingSec > 0) {
+            activeWakeupToastRef.current?.updateMsg?.(
+              `⚡ Waking up signaling network (free tier spin-up)... ~${remainingSec}s remaining`,
+              'info'
+            );
+          } else {
+            if (wakeupIntervalRef.current) {
+              clearInterval(wakeupIntervalRef.current);
+              wakeupIntervalRef.current = null;
+            }
+            activeWakeupToastRef.current?.updateMsg?.(
+              `Almost ready... Finalizing server handshake`,
+              'warning',
+              {
+                actionText: 'Retry Now',
+                onAction: () => {
+                  (window as any).retrySignaling?.();
+                }
+              }
+            );
+          }
+        }, 1000);
+      }
+    }, 3000);
+
     const socket = io(SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -247,57 +531,106 @@ export default function App() {
     socket.on("connect", () => {
       console.log("Connected to signaling server");
       setIsSocketConnected(true);
+
+      // Dismiss cold-start countdown toast and transition smoothly to success
+      if (wakeupTimeoutRef.current) {
+        clearTimeout(wakeupTimeoutRef.current);
+        wakeupTimeoutRef.current = null;
+      }
+      if (wakeupIntervalRef.current) {
+        clearInterval(wakeupIntervalRef.current);
+        wakeupIntervalRef.current = null;
+      }
+      if (activeWakeupToastRef.current) {
+        if (typeof activeWakeupToastRef.current.transitionToSuccess === 'function') {
+          activeWakeupToastRef.current.transitionToSuccess('🟢 Connected to Signaling Network! Ready to share.', 3500);
+        } else {
+          activeWakeupToastRef.current.dismiss?.();
+          (window as any).Toast?.show?.('🟢 Connected to Signaling Network! Ready to share.', 'success', 3500);
+        }
+        activeWakeupToastRef.current = null;
+      }
+      isWakingUpRef.current = false;
+
       (window as any).Signaling?.onConnect?.();
       const joinErr = document.getElementById('join-error');
       if (joinErr && (joinErr.textContent?.includes('signaling') || joinErr.textContent?.includes('loading'))) {
         joinErr.textContent = '';
       }
-      if (roomCodeRef.current.length === 4) {
+      if (joinedRef.current && roomCodeRef.current.length === 4) {
         // Socket reconnected after a drop. The P2P data path almost certainly
         // died with it, but connectedRef can still be true (dc.onclose/ICE
         // events lag real network loss by 30s+). If we're already "connected",
         // reset WebRTC so the room-status:ready re-broadcast rebuilds it
         // instead of skipping setup on dead channels. resetWebRTCConnection
         // re-emits join-room itself, so skip the immediate one.
+        const hasTransferIntent = isTransferringRef.current || transferRequestedRef.current || !!incomingFileRef.current || (isSourceRef.current && selectedFilesRef.current.length > 0) || !!transferIdRef.current || preservedResumeManifestRef.current !== null || midTransferDisconnectRef.current;
         if (connectedRef.current) {
-          console.warn("[Reconnect] Socket reconnected but stale connectedRef=true — resetting WebRTC for fresh negotiation");
-          resetWebRTCConnection(isTransferringRef.current);
+          console.warn("[Reconnect] Socket reconnected but stale connectedRef=true — resetting WebRTC for fresh negotiation (preserving transfer state)");
+          resetWebRTCConnection(hasTransferIntent);
         } else {
           socket.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
         }
       }
     });
 
-    socket.on("disconnect", () => {
-      console.log("Disconnected from signaling server");
+    socket.on("disconnect", (reason) => {
+      console.log("Disconnected from signaling server, reason:", reason);
       setIsSocketConnected(false);
       (window as any).Signaling?.onDisconnect?.();
+      if (reason === "io server disconnect") {
+        socket.connect();
+      }
     });
 
     socket.on("connect_error", (err) => {
       console.log("Signaling connect error:", err);
-      (window as any).showSignalingError?.();
+      if (!isWakingUpRef.current && !wakeupTimeoutRef.current) {
+        (window as any).showSignalingError?.();
+      }
     });
 
     socket.on("peer-disconnected", () => {
-      console.log("Peer disconnected");
-      (window as any).Signaling?.onPeerLeft?.(isTransferringRef.current);
+      console.log("[Signaling] Peer disconnected, resetting WebRTC connection...");
+      setMessages(prev => [...prev, "SYSTEM: Peer disconnected. Waiting for peer..."]);
+      const hasTransferIntent = isTransferringRef.current || transferRequestedRef.current || !!incomingFileRef.current || (isSourceRef.current && selectedFilesRef.current.length > 0) || !!transferIdRef.current || preservedResumeManifestRef.current !== null || midTransferDisconnectRef.current;
+      (window as any).Signaling?.onPeerLeft?.(hasTransferIntent);
+      resetWebRTCConnection(hasTransferIntent);
     });
 
     socket.on("room-status", async ({ status, role, code }) => {
       console.log(`[Signaling] Room status: ${status}, role: ${role}`);
       const codeStr = typeof code === 'object' ? '' : String(code || '');
       const finalCode = codeStr || roomCodeRef.current;
+      const hasTransferIntent = isTransferringRef.current || transferRequestedRef.current || !!incomingFileRef.current || (isSourceRef.current && selectedFilesRef.current.length > 0) || !!transferIdRef.current || preservedResumeManifestRef.current !== null || midTransferDisconnectRef.current;
+      lastScreenRef.current = (window as any).__nexusCurrentScreen === 'receiver' ? 'receiver'
+        : (window as any).__nexusCurrentScreen === 'sender' ? 'sender' : 'home';
+      const isCurrentlyReceiver = lastScreenRef.current === 'receiver';
+      // KTD6: a completed transfer's success screen is intent to protect. A
+      // peer leave, lock-grace expiry, or reconnect must not flip away from
+      // success-screen / receive-success while either is visible.
+      const isSuccessVisible = (typeof document !== 'undefined') && (
+        document.getElementById('success-screen')?.classList.contains('visible') ||
+        document.getElementById('receive-success')?.classList.contains('visible')
+      );
       if (status === 'waiting') {
         setJoined(true);
-        if ((window as any).transitionToSender) {
-           (window as any).transitionToSender(finalCode);
+        if (!hasTransferIntent && !isSuccessVisible && (window as any).transitionToSender) {
+          if (isCurrentlyReceiver && (window as any).transitionToReceiver) {
+            (window as any).transitionToReceiver(finalCode);
+          } else {
+            (window as any).transitionToSender(finalCode);
+          }
         }
       } else if (status === 'ready') {
         setJoined(true);
-        // Both clients transition to the shared workspace (transitionToSender)
-        if ((window as any).transitionToSender) {
-           (window as any).transitionToSender(finalCode);
+        // Both clients transition to the shared workspace (transitionToSender) only if no transfer in flight
+        if (!hasTransferIntent && !isSuccessVisible && (window as any).transitionToSender) {
+          if (isCurrentlyReceiver && (window as any).transitionToReceiver) {
+            (window as any).transitionToReceiver(finalCode);
+          } else {
+            (window as any).transitionToSender(finalCode);
+          }
         }
         if (connectedRef.current) {
           console.log("[Signaling] Already P2P connected, skipping WebRTC setup on room status update.");
@@ -375,17 +708,6 @@ export default function App() {
       }
     });
 
-    socket.on("peer-disconnected", () => {
-      console.log("[Signaling] Peer disconnected, resetting room...");
-      setMessages(prev => [...prev, "SYSTEM: Peer disconnected. Room reset."]);
-      // If the disconnect lands mid-transfer, keep the transfer/role refs so the
-      // resume handshake can re-arm on channel reopen (the server re-broadcasts
-      // global-lock to restore roles once the peer rejoins). Consider transfer
-      // intent beyond isTransferringRef because dc.onclose may have already
-      // cleared that flag while preserving transferRequestedRef/incomingFile.
-      const hasTransferIntent = isTransferringRef.current || transferRequestedRef.current || !!incomingFileRef.current;
-      resetWebRTCConnection(hasTransferIntent);
-    });
 
     socket.on("global-lock", ({ sourceId }) => {
       console.log("CONSOLE: Received global-lock from server. Source:", sourceId);
@@ -426,6 +748,8 @@ export default function App() {
         }
       } else {
         // We are the receiver! Transition to receiver interface.
+        lastScreenRef.current = 'receiver';
+        (window as any).__nexusCurrentScreen = 'receiver';
         if ((window as any).transitionToReceiver) {
           (window as any).transitionToReceiver(roomCodeRef.current);
         }
@@ -454,13 +778,13 @@ export default function App() {
         fileInputRef.current.value = '';
       }
 
-      // Transition back to shared workspace if not on a success screen
+      // KTD3: screen placement is NOT decided here. Global-unlock updates
+      // state and resets sender UI only; it must not flip a receiver to the
+      // sender workspace. room-status and the screen ref own placement.
       const isSuccessVisible = document.getElementById('success-screen')?.classList.contains('visible') || 
                                document.getElementById('receive-success')?.classList.contains('visible');
-      if (!isSuccessVisible) {
-        if ((window as any).transitionToSender) {
-          (window as any).transitionToSender(roomCodeRef.current);
-        }
+      const isTransferActive = isTransferringRef.current || transferRequestedRef.current || (typeof (window as any).getRxTransferActive === 'function' && (window as any).getRxTransferActive());
+      if (!isSuccessVisible && !isTransferActive) {
         if ((window as any).resetSenderUI) {
           (window as any).resetSenderUI();
         }
@@ -473,6 +797,12 @@ export default function App() {
 
 
     return () => {
+      if (wakeupTimeoutRef.current) clearTimeout(wakeupTimeoutRef.current);
+      if (wakeupIntervalRef.current) clearInterval(wakeupIntervalRef.current);
+      if (activeWakeupToastRef.current) {
+        activeWakeupToastRef.current.dismiss?.();
+        activeWakeupToastRef.current = null;
+      }
       socket.disconnect();
       if (pcRef.current) { pcRef.current.close(); }
       if (transferEngineRef.current) {
@@ -607,6 +937,7 @@ export default function App() {
     setMessages(prev => [...prev, `SYSTEM: Starting transfer of ${file.name} over ${openDataChans.length} data channels.`]);
     isTransferringRef.current = true;
     setIsTransferring(true);
+    (window as any).showSenderProgress?.(file, currentFileIndexRef.current, selectedFilesRef.current.length);
 
     let engine = transferEngineRef.current;
     if (!engine) {
@@ -673,9 +1004,15 @@ export default function App() {
 
       pendingDropActionRef.current = false;
       console.log("CONSOLE: Drop recognized on receiver. Requesting transfer.");
+      lastScreenRef.current = 'receiver';
+      (window as any).__nexusCurrentScreen = 'receiver';
       transferRequestedRef.current = true;
       isTransferringRef.current = true;
       setIsTransferring(true);
+      const inc = incomingFileRef.current;
+      if (inc) {
+        (window as any).showReceiverProgress?.(inc.name, inc.size, inc.batchIndex, inc.batchCount);
+      }
       setMessages(prev => [...prev, `SYSTEM: Drop recognized for "${incomingFileRef.current!.name}". Sending download request...`]);
 
       console.log("CONSOLE: Sending START_TRANSFER to peer");
@@ -688,50 +1025,21 @@ export default function App() {
     }
   };
 
-  const cancelTransfer = () => {
+  const cancelTransfer = async () => {
     console.log("CONSOLE: Cancelling transfer");
-    if (transferEngineRef.current) {
-      transferEngineRef.current.cancel();
+    const engine = transferEngineRef.current;
+    if (engine) {
       transferEngineRef.current = null;
+      await engine.closeStreamWriterAsync();
+      engine.cancel();
     }
     // BUG 12 FIX: Use readyState directly
     controlConnRef.current.filter(c => c.readyState === 'open')
       .forEach(c => c.send(JSON.stringify({ type: "CANCEL_TRANSFER" })));
 
-    // ── Partial file cleanup ─────────────────────────────────────────────────
-    // Delete any partial file left by the cancelled transfer, regardless of
-    // which storage path was used. Without this, every cancel leaves garbage.
-
-    // Path 1 — showSaveFilePicker (user chose an explicit save location)
-    if (streamFileHandleRef.current) {
-      const fh = streamFileHandleRef.current;
-      streamFileHandleRef.current = null;
-      // FileSystemFileHandle.remove() available in Chrome 117+
-      if (typeof fh.remove === 'function') {
-        fh.remove().catch(() => {}); // silently ignore if already gone
-      }
-    }
-
-    // Path 2 — showDirectoryPicker (silent save to chosen folder)
-    if (saveDirectoryHandleRef.current && incomingFileRef.current?.name) {
-      const nameToDelete = incomingFileRef.current.name;
-      saveDirectoryHandleRef.current.removeEntry(nameToDelete).catch(() => {});
-    }
-    saveDirectoryHandleRef.current = null;
-    hasSaveDirectoryRef.current = false;
-    isChoosingDirectoryRef.current = false;
-    directoryPickerDeclinedRef.current = false;
-
-    // Path 3 — OPFS (drop-button / mobile)
-    if (opfsFileHandleRef.current) {
-      const nameToDelete = incomingFileRef.current?.name;
-      if (nameToDelete && navigator.storage?.getDirectory) {
-        navigator.storage.getDirectory().then(root => {
-          root.removeEntry(nameToDelete).catch(() => {});
-        }).catch(() => {});
-      }
-      opfsFileHandleRef.current = null;
-    }
+    // ── Partial file cleanup (Purge OPFS & FSA files with lock release) ──────
+    const nameToDelete = incomingFileRef.current?.name;
+    await purgePartialTransferFileAsync(nameToDelete);
     // ────────────────────────────────────────────────────────────────────────
 
     setIncomingFile(null);
@@ -752,6 +1060,18 @@ export default function App() {
     if (fileInputRef.current) { fileInputRef.current.value = ''; }
     setMessages((prev) => [...prev, `SYSTEM: Transfer cancelled.`]);
     if (socketRef.current) { socketRef.current.emit("dropped", roomCodeRef.current); }
+    // The "dropped" round-trip unlocks the room asynchronously, but
+    // onTransferCancelled() decides the exit screen synchronously via
+    // _socketIsLocked(). If the lock ref is still true here, a receiver that
+    // cancels is sent back to the receiver screen and stays stuck. Clear the
+    // local lock now so the cancel exits to the shared sender workspace
+    // (drag-and-drop box) on both devices.
+    setIsGlobalLocked(false);
+    isGlobalLockedRef.current = false;
+    setIsSource(false);
+    isSourceRef.current = false;
+    midTransferDisconnectRef.current = false;
+    (window as any).setTransferPhase?.('idle');
     (window as any).onTransferCancelled?.();
   };
 
@@ -775,7 +1095,7 @@ export default function App() {
       };
       setReceivedFiles(prev => [newFile, ...prev]);
 
-      const url = URL.createObjectURL(blob);
+      const url = createTrackedBlobUrl(blob);
       (window as any).onFileReceivedSuccess?.({
         name: fileName,
         size: blob.size,
@@ -824,7 +1144,7 @@ export default function App() {
             id: Math.random().toString(36).substring(7)
           }, ...prev]);
 
-          const url = URL.createObjectURL(file);
+          const url = createTrackedBlobUrl(file);
           (window as any).onFileReceivedSuccess?.({
             name: fileName,
             size: file.size,
@@ -903,14 +1223,14 @@ export default function App() {
 
     if (!savedSilently) {
       try {
-        const url = URL.createObjectURL(blob);
+        const url = createTrackedBlobUrl(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = fileName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 60_000); // 60s: gives Chrome time to fully read large blobs before revocation
+        setTimeout(() => revokeTrackedBlobUrl(url), 60_000); // 60s: gives Chrome time to fully read large blobs before revocation
         setMessages(prev => [...prev, `SYSTEM: Received & Saved: ${fileName}`]);
       } catch (e) {
         console.error('Auto-download failed:', e);
@@ -970,10 +1290,12 @@ export default function App() {
       // explicit leave / transfer completion instead).
       transferRequestedRef.current = false;
       pendingDropActionRef.current = false;
-      pendingStartTransferRef.current = false;
+      pendingStartTransferRef.current = null;
       transferIdRef.current = null;
       incomingTransferIdRef.current = null;
       preservedResumeManifestRef.current = null;
+      // Clear the disconnect guard: a full reset means no mid-transfer resume is pending.
+      midTransferDisconnectRef.current = false;
     }
 
     if (socketRef.current && roomCodeRef.current.length === 4) {
@@ -1153,6 +1475,10 @@ export default function App() {
         // BUG 7 FIX: sync ref update before React state (no 16ms vulnerability)
         connectedRef.current = true;
         setConnected(true);
+        // BUG FIX (Bug 2): channels re-established — the silent reconnect is done.
+        // Clear the disconnect guard so future room-status events can drive normal
+        // screen transitions (e.g. when peer leaves after resume completes).
+        midTransferDisconnectRef.current = false;
 
         if (transferEngineRef.current) {
           transferEngineRef.current.setConnections(connRef.current, controlConnRef.current);
@@ -1236,22 +1562,36 @@ export default function App() {
           });
         }
 
-        if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && transferRequestedRef.current && transferEngineRef.current) {
-          const resumeManifest = transferEngineRef.current.getReceivedManifest();
-          console.log(`CONSOLE: Resuming transfer with ${resumeManifest.length} already-received chunks`);
-          isTransferringRef.current = true;
-          setIsTransferring(true);
-          controlConnRef.current.forEach(c => {
-            if (c.readyState === 'open') {
-              c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest }));
-            }
-          });
-        } else if (isSourceRef.current && transferIdRef.current && isTransferringRef.current) {
+        if (!isSourceRef.current && isGlobalLockedRef.current && incomingFileRef.current && (transferRequestedRef.current || preservedResumeManifestRef.current !== null)) {
+          lastScreenRef.current = 'receiver';
+          (window as any).__nexusCurrentScreen = 'receiver';
+          if (transferEngineRef.current) {
+            const resumeManifest = preservedResumeManifestRef.current ?? transferEngineRef.current.getReceivedManifest();
+            console.log(`CONSOLE: Resuming transfer with ${resumeManifest.length} already-received chunks`);
+            isTransferringRef.current = true;
+            setIsTransferring(true);
+            const inc = incomingFileRef.current;
+            (window as any).showReceiverProgress?.(inc.name, inc.size, inc.batchIndex, inc.batchCount);
+            controlConnRef.current.forEach(c => {
+              if (c.readyState === 'open') {
+                c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest }));
+              }
+            });
+          } else {
+            console.log("CONSOLE: Channels reopened with incomingFile but no engine — re-requesting FILE_META from sender to rebuild receiver");
+            controlConnRef.current.filter(c => c.readyState === 'open')
+              .forEach(c => c.send(JSON.stringify({ type: "REQUEST_FILE_META" })));
+          }
+        } else if (isSourceRef.current && transferIdRef.current) {
           // U4 (R1/R2): the sender's channels re-established mid-transfer (e.g.
           // after a backgrounding that dropped WebRTC). The receiver is the
           // authority on progress, so probe it for its manifest — the
           // RESUME_MANIFEST reply re-arms the sender engine (U3).
           console.log(`CONSOLE: Channels reopened mid-transfer — sending RESUME_REQUEST for ${transferIdRef.current}`);
+          const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
+          if (currentFile) {
+            (window as any).showSenderProgress?.(currentFile, currentFileIndexRef.current, selectedFilesRef.current.length);
+          }
           const req = JSON.stringify({ type: "RESUME_REQUEST", transferId: transferIdRef.current });
           controlConnRef.current.forEach(c => {
             if (c.readyState === 'open') c.send(req);
@@ -1286,6 +1626,14 @@ export default function App() {
       if (connRef.current.length === 0 && controlConnRef.current.length === 0) {
         setConnected(false);
         connectedRef.current = false;
+        // KTD5: pure data-channel death with a live signaling socket — re-emit
+        // join-room under a rate limit instead of waiting on the 8-30s
+        // health-check interval. Mirrors the visibility-handler rejoin guard.
+        if (socketRef.current?.connected && joinedRef.current && roomCodeRef.current.length === 4 && Date.now() - lastRejoinRef.current >= 5000) {
+          lastRejoinRef.current = Date.now();
+          console.warn("[DataChannel] All channels closed but socket alive — bounded rejoin to rebuild WebRTC");
+          socketRef.current.emit("join-room", { roomCode: roomCodeRef.current, clientId: clientIdRef.current });
+        }
         if (isTransferringRef.current) {
           // Mid-transfer channel loss: PRESERVE the transfer intent instead of
           // cancelling. The peer's network may have blipped and will reconnect —
@@ -1302,6 +1650,12 @@ export default function App() {
           isTransferringRef.current = false;
           isTransferringFastRef.current = false;
           setIsTransferring(false);
+          // BUG FIX (Bug 2): isTransferringRef is now false to prevent double-cancel,
+          // but room-status:waiting will arrive soon and hasTransferIntent evaluates
+          // false, flipping the UI to the drag-and-drop screen. Set this dedicated
+          // flag so room-status and peer-disconnected handlers suppress all screen
+          // transitions until the new channels open and resume is confirmed.
+          midTransferDisconnectRef.current = true;
         } else {
           transferEngineRef.current?.destroy();
           transferEngineRef.current = null;
@@ -1364,7 +1718,22 @@ export default function App() {
 
         if (payload && typeof payload === 'object') {
           if (payload.type === "FILE_META") {
-            console.log("CONSOLE: Received FILE_META:", payload.file);
+            if (!payload.file || typeof payload.file !== 'object') {
+              console.warn("CONSOLE: Received malformed FILE_META payload:", payload);
+              return;
+            }
+            const rawFile = payload.file;
+            const safeName = sanitizeFilename(rawFile.name);
+            const safeSize = (typeof rawFile.size === 'number' && Number.isFinite(rawFile.size) && rawFile.size >= 0 && rawFile.size <= 100 * 1024 * 1024 * 1024)
+              ? rawFile.size
+              : 0;
+            const safeFile = {
+              ...rawFile,
+              name: safeName,
+              size: safeSize,
+            };
+            payload.file = safeFile;
+            console.log("CONSOLE: Received sanitized FILE_META:", payload.file);
             incomingFileRef.current = payload.file;
             setIncomingFile(payload.file);
             incomingTransferIdRef.current = payload.transferId ?? null;
@@ -1448,18 +1817,23 @@ export default function App() {
               }
             }
 
-            if (transferRequestedRef.current && isGlobalLockedRef.current && !isSourceRef.current) {
-              const resumeManifest = preservedResumeManifestRef.current ?? [];
+            const isResuming = (transferRequestedRef.current || preservedResumeManifestRef.current !== null) && isGlobalLockedRef.current && !isSourceRef.current;
+            if (isResuming) {
+              lastScreenRef.current = 'receiver';
+              (window as any).__nexusCurrentScreen = 'receiver';
+              const resumeManifest = preservedResumeManifestRef.current ?? (transferEngineRef.current?.getReceivedManifest() ?? []);
               preservedResumeManifestRef.current = null;
-              console.log(`CONSOLE: Auto-accepting next file in multi-file transfer${resumeManifest.length ? ` (resuming ${resumeManifest.length} received chunks)` : ''}`);
+              transferRequestedRef.current = true;
+              console.log(`CONSOLE: Auto-accepting and resuming file transfer${resumeManifest.length ? ` (resuming ${resumeManifest.length} received chunks)` : ''}`);
               isTransferringRef.current = true;
               setIsTransferring(true);
+              (window as any).showReceiverProgress?.(payload.file.name, payload.file.size, payload.file.batchIndex, payload.file.batchCount);
               controlConnRef.current.forEach(c => {
                 if (c.readyState === 'open') {
                   c.send(JSON.stringify({ type: "START_TRANSFER", resumeManifest }));
                 }
               });
-              setMessages((prev) => [...prev, `SYSTEM: Auto-downloading next file: ${payload.file.name}`]);
+              setMessages((prev) => [...prev, `SYSTEM: Resuming file download: ${payload.file.name}`]);
             } else {
               transferRequestedRef.current = false;
               setMessages((prev) => [...prev, `SYSTEM: Incoming file ready: ${payload.file.name}. Click DROP (Receive) to download.`]);
@@ -1500,13 +1874,28 @@ export default function App() {
             // U2: receiver-published progress. U3 re-arms the sender from it;
             // here the transferId is matched so a stale manifest from a previous
             // cancelled transfer can never re-seed the current one (KTD3/AE2).
-            if (isSourceRef.current && transferIdRef.current && payload.transferId === transferIdRef.current && isTransferringRef.current) {
+            // isTransferringRef must NOT gate this: a mid-transfer reconnect runs
+            // resetWebRTCConnection(true), which sets it false and nulls the
+            // engine — the sender's RESUME_REQUEST/RESUME_MANIFEST handshake is
+            // exactly how the paused transfer is re-armed afterwards.
+            if (isSourceRef.current && transferIdRef.current && payload.transferId === transferIdRef.current) {
               const manifest: number[] = Array.isArray(payload.manifest) ? payload.manifest : [];
               console.log(`[Visibility] Received RESUME_MANIFEST with ${manifest.length} chunks`);
               const engine = transferEngineRef.current;
               if (engine) {
                 console.log(`[Visibility] Re-arming sender engine from manifest (${manifest.length} chunks)`);
                 engine.resumeTransfer(manifest);
+              } else {
+                // resetWebRTCConnection(true) nulled the engine while preserving
+                // selectedFiles/transferId — rebuild it and resume so the paused
+                // transfer auto-starts instead of stalling silently.
+                const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
+                if (currentFile) {
+                  console.log(`[Visibility] Engine was reset — re-creating sender engine and resuming from manifest (${manifest.length} chunks)`);
+                  executeTransfer(currentFile, manifest);
+                } else {
+                  console.log("[Visibility] RESUME_MANIFEST received but no file selected to resume");
+                }
               }
             } else {
               console.log("[Visibility] Ignoring RESUME_MANIFEST (unknown transferId or not the sender)", payload.transferId);
@@ -1514,28 +1903,16 @@ export default function App() {
 
           } else if (payload.type === "CANCEL_TRANSFER") {
             console.log("CONSOLE: Received CANCEL_TRANSFER from peer.");
-            if (transferEngineRef.current) {
-              transferEngineRef.current.cancel();
+            const engine = transferEngineRef.current;
+            if (engine) {
+              transferEngineRef.current = null;
+              await engine.closeStreamWriterAsync();
+              engine.cancel();
             }
-    // ── Partial file cleanup (same 3 paths as cancelTransfer) ───────────────
-    if (streamFileHandleRef.current) {
-      const fh = streamFileHandleRef.current;
-      streamFileHandleRef.current = null;
-      if (typeof fh.remove === 'function') { fh.remove().catch(() => {}); }
-    }
-    if (saveDirectoryHandleRef.current && incomingFileRef.current?.name) {
-      saveDirectoryHandleRef.current.removeEntry(incomingFileRef.current.name).catch(() => {});
-    }
-    if (opfsFileHandleRef.current) {
-      const nameToDelete = incomingFileRef.current?.name;
-      if (nameToDelete && navigator.storage?.getDirectory) {
-        navigator.storage.getDirectory().then(root => {
-          root.removeEntry(nameToDelete).catch(() => {});
-        }).catch(() => {});
-      }
-      opfsFileHandleRef.current = null;
-    }
-    // ────────────────────────────────────────────────────────────────────────
+            // ── Partial file cleanup (Purge OPFS & FSA files with lock release) ──────
+            const nameToDelete = incomingFileRef.current?.name;
+            await purgePartialTransferFileAsync(nameToDelete);
+            // ────────────────────────────────────────────────────────────────────────
             setIncomingFile(null);
             incomingFileRef.current = null;
             fileChunksRef.current = [];
@@ -1551,6 +1928,16 @@ export default function App() {
             setTelemetry(null);
             if (fileInputRef.current) fileInputRef.current.value = '';
             setMessages((prev) => [...prev, `SYSTEM: Peer cancelled the transfer.`]);
+            // Mirror the cancelTransfer() fix: the peer's "dropped" round-trip
+            // hasn't reached us yet, so the stale lock ref would send this
+            // receiver back to the receiver screen. Clear it so onTransferCancelled
+            // exits to the shared sender workspace (drag-and-drop box).
+            setIsGlobalLocked(false);
+            isGlobalLockedRef.current = false;
+            setIsSource(false);
+            isSourceRef.current = false;
+            midTransferDisconnectRef.current = false;
+            (window as any).setTransferPhase?.('idle');
             (window as any).onTransferCancelled?.();
 
 
@@ -1876,7 +2263,14 @@ export default function App() {
       const safeCode = typeof roomCode === 'object' ? '' : String(roomCode);
       if (safeCode) {
         (window as any).Signaling?.setRoomCode(safeCode);
-        (window as any).transitionToSender?.(safeCode);
+        // KTD3: do not unconditionally flip to the sender workspace. A first
+        // join or reconnect must not yank a waiting receiver to the sender
+        // screen — room-status owns screen placement. Only fall through to the
+        // sender workspace when the current screen is not receiver.
+        const currentScreen = (window as any).__nexusCurrentScreen;
+        if (currentScreen !== 'receiver') {
+          (window as any).transitionToSender?.(safeCode);
+        }
       }
     }
   }, [joined, roomCode]);
@@ -1916,19 +2310,25 @@ export default function App() {
   // `requested` (receiver dropped, no chunk yet) vs `active` is decided by
   // whether the engine has reported at least one chunk / ACK. Depend on the
   // string so a re-render with unchanged inputs does not re-fire the bridge.
+  const isMidTransfer = midTransferDisconnectRef.current || preservedResumeManifestRef.current !== null;
   const transferPhase: 'idle' | 'requested' | 'active' | 'stalled' = isTransferStalled
     ? 'stalled'
-    : !isTransferring
+    : (!isTransferring && !isMidTransfer)
       ? 'idle'
-      : transferRequestedRef.current && !(telemetry && telemetry.chunksSent > 0)
-        ? 'requested'
-        : 'active';
+      : isMidTransfer
+        ? 'active'
+        : transferRequestedRef.current && !(telemetry && telemetry.chunksSent > 0)
+          ? 'requested'
+          : 'active';
 
   useEffect(() => {
     window.setTransferPhase?.(transferPhase);
   }, [transferPhase]);
 
   useEffect(() => {
+    // Clean up any orphaned OPFS files left from prior sessions/crashes
+    sanitizeOpfsStorage(new Set());
+
     // ── Expose socket hooks for Ch2/Ch3 native scripts ──
     // Ch2's joinRoom() checks _socketIsConnected and _socketJoinRoom before
     // falling back to the role-picker UI. Exposing these ensures Ch2/Ch3 route
@@ -1937,9 +2337,22 @@ export default function App() {
     (window as any)._socketIsLocked = () => isGlobalLockedRef.current;
     (window as any)._senderHasSelectedFiles = () => selectedFilesRef.current.length > 0;
     (window as any)._pendingResumeChunks = () => preservedResumeManifestRef.current?.length ?? 0;
+    (window as any)._sanitizeOpfsStorage = sanitizeOpfsStorage;
+    (window as any)._purgePartialTransferFile = purgePartialTransferFileAsync;
+    (window as any)._getTrackedBlobUrlCount = () => blobUrlRegistryRef.current.size;
 
     (window as any)._socketJoinRoom = (code: string) => {
       setRoomCode(code);
+      roomCodeRef.current = code;
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.setItem('nexus_active_room', code);
+          const targetURL = window.location.pathname + '?room=' + code;
+          if (window.location.search !== targetURL) {
+            window.history.replaceState({}, document.title, targetURL);
+          }
+        } catch (_) {}
+      }
       const joinErr = document.getElementById('join-error');
       if (joinErr && socketRef.current?.connected && (joinErr.textContent?.includes('signaling') || joinErr.textContent?.includes('loading'))) {
         joinErr.textContent = '';
@@ -1949,6 +2362,16 @@ export default function App() {
 
     (window as any)._socketCreateRoom = (code: string) => {
       setRoomCode(code);
+      roomCodeRef.current = code;
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.setItem('nexus_active_room', code);
+          const targetURL = window.location.pathname + '?room=' + code;
+          if (window.location.search !== targetURL) {
+            window.history.replaceState({}, document.title, targetURL);
+          }
+        } catch (_) {}
+      }
       const joinErr = document.getElementById('join-error');
       if (joinErr && socketRef.current?.connected && (joinErr.textContent?.includes('signaling') || joinErr.textContent?.includes('loading'))) {
         joinErr.textContent = '';
@@ -1982,10 +2405,19 @@ export default function App() {
     };
 
     const handleBtnLeaveClick = () => {
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.removeItem('nexus_active_room');
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } catch (_) {}
+      }
       socketRef.current?.emit('dropped', roomCodeRef.current);
       socketRef.current?.emit('leave-room');
       roomCodeRef.current = ''; // Force update Ref immediately to prevent auto-rejoin in resetWebRTCConnection
       resetWebRTCConnection();
+      revokeAllTrackedBlobUrls();
+      sanitizeOpfsStorage(new Set());
+      setReceivedFiles([]);
       setJoined(false);
       setConnected(false);
       setSelectedFiles([]);
@@ -1998,6 +2430,15 @@ export default function App() {
     };
 
     const handleBtnRxLeaveClick = () => {
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.removeItem('nexus_active_room');
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } catch (_) {}
+      }
+      revokeAllTrackedBlobUrls();
+      sanitizeOpfsStorage(new Set());
+      setReceivedFiles([]);
       (window as any).leaveReceiver?.();
     };
 
@@ -2006,29 +2447,8 @@ export default function App() {
     };
 
     const handleBtnClearFilesClick = () => {
-      if (navigator.storage && navigator.storage.getDirectory) {
-        navigator.storage.getDirectory().then(async (root) => {
-          try {
-            // @ts-ignore
-            const entries = root.entries ? root.entries() : null;
-            if (entries) {
-              for await (const [name] of entries) {
-                await root.removeEntry(name, { recursive: true }).catch(() => {});
-              }
-            } else {
-              // @ts-ignore
-              const keys = root.keys ? root.keys() : null;
-              if (keys) {
-                for await (const name of keys) {
-                  await root.removeEntry(name, { recursive: true }).catch(() => {});
-                }
-              }
-            }
-          } catch (err) {
-            console.error('Failed to wipe OPFS directory:', err);
-          }
-        }).catch(() => {});
-      }
+      revokeAllTrackedBlobUrls();
+      sanitizeOpfsStorage(new Set());
       setReceivedFiles([]);
     };
 
@@ -2051,9 +2471,18 @@ export default function App() {
     // Real complete transfer callback remains intact (handled by Ch3 in index.html)
 
     (window as any)._socketLeaveRoom = () => {
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.removeItem('nexus_active_room');
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } catch (_) {}
+      }
       socketRef.current?.emit('leave-room');
       roomCodeRef.current = ''; // Force update Ref immediately to prevent auto-rejoin in resetWebRTCConnection
       resetWebRTCConnection();
+      revokeAllTrackedBlobUrls();
+      sanitizeOpfsStorage(new Set());
+      setReceivedFiles([]);
       setJoined(false);
       setConnected(false);
       setSelectedFiles([]);
@@ -2077,6 +2506,7 @@ export default function App() {
     };
 
     return () => {
+      revokeAllTrackedBlobUrls();
       btnGrab?.removeEventListener('click', handleBtnGrabClick);
       btnDrop?.removeEventListener('click', handleBtnDropClick);
       btnLeave?.removeEventListener('click', handleBtnLeaveClick);
@@ -2087,6 +2517,11 @@ export default function App() {
 
       delete (window as any)._socketIsConnected;
       delete (window as any)._socketIsLocked;
+      delete (window as any)._senderHasSelectedFiles;
+      delete (window as any)._pendingResumeChunks;
+      delete (window as any)._sanitizeOpfsStorage;
+      delete (window as any)._purgePartialTransferFile;
+      delete (window as any)._getTrackedBlobUrlCount;
       delete (window as any)._socketJoinRoom;
       delete (window as any)._socketCreateRoom;
       delete (window as any).onFilesSelected;

@@ -21,6 +21,41 @@ export interface FileMetadata {
 
 export const CHUNK_SIZE = 128 * 1024;                 // 128 KB per chunk
 export const HEADER_SIZE = 17;                        // 4(idx)+8(hash)+1(flags)+4(origLen)
+
+export function sanitizeFilename(name: string): string {
+  if (!name || typeof name !== 'string') {
+    return `nexus_file_${Date.now()}`;
+  }
+  // 1. Strip null bytes & control characters
+  let clean = name.replace(/[\x00-\x1f\x7f]/g, '');
+  // 2. Normalize and replace path traversal sequences & illegal filesystem characters
+  clean = clean.replace(/[/\\?%*:|"<>]/g, '_').replace(/\.\.+/g, '_').trim();
+  // 3. Prevent empty/whitespace or dot-only filenames
+  if (!clean || clean === '.' || clean === '..') {
+    return `nexus_file_${Date.now()}`;
+  }
+  // 4. Windows reserved device names filtering (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+  const baseName = clean.split('.')[0].toUpperCase();
+  const reserved = new Set([
+    'CON', 'PRN', 'AUX', 'NUL',
+    'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+    'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+  ]);
+  if (reserved.has(baseName)) {
+    clean = `_${clean}`;
+  }
+  // 5. Truncate long filenames to 255 chars
+  if (clean.length > 255) {
+    const extIndex = clean.lastIndexOf('.');
+    if (extIndex !== -1 && clean.length - extIndex < 16) {
+      const ext = clean.substring(extIndex);
+      clean = clean.substring(0, 255 - ext.length) + ext;
+    } else {
+      clean = clean.substring(0, 255);
+    }
+  }
+  return clean || `nexus_file_${Date.now()}`;
+}
 const PREFETCH_BATCH = 200;                           // 25.6 MB prefetch
 const PACKET_CACHE_MAX = 500;                         // 64 MB RAM cap
 const BACKPRESSURE_LOW_BYTES  = 1024 * 1024;          // 1 MB — resume pumping
@@ -708,13 +743,62 @@ export class TransferEngine {
     this.streamWriter = writer;
   }
 
+  public async closeStreamWriterAsync(): Promise<void> {
+    if (this.streamWriter) {
+      const writer = this.streamWriter;
+      this.streamWriter = null;
+      try {
+        const closePromise = (async () => {
+          try {
+            if (typeof (writer as any).abort === 'function') {
+              await (writer as any).abort();
+            } else if (typeof writer.close === 'function') {
+              await writer.close();
+            }
+          } catch (err) {
+            console.warn('[TransferEngine] stream writer close/abort error:', err);
+          }
+        })();
+
+        const timeoutPromise = new Promise<void>((resolve) => setTimeout(resolve, 300));
+        await Promise.race([closePromise, timeoutPromise]);
+      } catch (err) {
+        console.warn('[TransferEngine] closeStreamWriterAsync failed:', err);
+      }
+    }
+  }
+
   public initReceiver(meta: FileMetadata) {
     this.isCanceled = false;
-    this.fileMeta = meta;
+    const cleanName = sanitizeFilename(meta.name);
+    const validSize = (typeof meta.size === 'number' && Number.isFinite(meta.size) && meta.size >= 0 && meta.size <= 100 * 1024 * 1024 * 1024)
+      ? meta.size
+      : 0;
+    const maxChunks = 2_000_000;
+    const expectedChunks = validSize > 0 ? Math.ceil(validSize / CHUNK_SIZE) : 0;
+    const totalChunks = (typeof meta.totalChunks === 'number' && Number.isFinite(meta.totalChunks) && meta.totalChunks >= 0 && meta.totalChunks <= maxChunks)
+      ? meta.totalChunks
+      : expectedChunks;
+
+    this.fileMeta = {
+      ...meta,
+      name: cleanName,
+      size: validSize,
+      totalChunks: totalChunks,
+      chunkSize: meta.chunkSize || CHUNK_SIZE,
+    };
+
     this.receivedChunks.clear();
     this.startTime = performance.now();
     this.bytesTransferred = 0;
-    this.receiveChunksArray = new Array(meta.totalChunks);
+    try {
+      this.receiveChunksArray = new Array(totalChunks);
+    } catch (err) {
+      console.error('[TransferEngine] RangeError or allocation error initializing receiveChunksArray:', err);
+      this.receiveChunksArray = [];
+      if (this.onComplete) this.onComplete(null);
+      return;
+    }
     this.receiveQueue = [];
     this.isProcessingQueue = false;
     this.lastFlushedIndex = -1;
@@ -723,7 +807,7 @@ export class TransferEngine {
     this.startTelemetry();
     this.startRamWatchdog();
 
-    if (meta.totalChunks === 0) this.finishReceive();
+    if (totalChunks === 0) this.finishReceive();
   }
 
   private startRamWatchdog(): void {
@@ -814,6 +898,10 @@ export class TransferEngine {
 
   private async processChunkInternal(buffer: ArrayBuffer) {
     if (this.isCanceled || !this.fileMeta) return;
+    if (buffer.byteLength < HEADER_SIZE) {
+      console.warn('[TransferEngine] Malformed chunk buffer: smaller than HEADER_SIZE');
+      return;
+    }
 
     if (this.receivedChunks.size === 0) {
       this.startTime = performance.now();
@@ -823,10 +911,16 @@ export class TransferEngine {
     const view = new DataView(buffer);
 
     const index = view.getUint32(0, true);
-    // expectedHash field present for future use; SCTP CRC32c guarantees integrity.
-    // const expectedHash = view.getBigUint64(4, true);
+    if (index >= this.fileMeta.totalChunks) {
+      console.warn(`[TransferEngine] Chunk index ${index} out of bounds (totalChunks: ${this.fileMeta.totalChunks}), dropping`);
+      return;
+    }
     const flags = view.getUint8(12);
     const originalLength = view.getUint32(13, true);
+    if (originalLength > CHUNK_SIZE * 4) {
+      console.warn(`[TransferEngine] Oversized originalLength ${originalLength}, dropping chunk ${index}`);
+      return;
+    }
     let payload = packet.slice(HEADER_SIZE);
 
     if (this.receivedChunks.has(index)) return;
@@ -1084,8 +1178,15 @@ export class TransferEngine {
     this.hasherWorkers = [];
 
     if (this.streamWriter) {
-      this.streamWriter.close().catch(() => {});
+      const writer = this.streamWriter;
       this.streamWriter = null;
+      try {
+        if (typeof (writer as any).abort === 'function') {
+          (writer as any).abort().catch(() => {});
+        } else if (typeof writer.close === 'function') {
+          writer.close().catch(() => {});
+        }
+      } catch (_) {}
     }
 
     // Close all DataChannels — raw RTCDataChannel objects
@@ -1128,8 +1229,15 @@ export class TransferEngine {
       this.staleWatchdogInterval = null;
     }
     if (this.streamWriter) {
-      this.streamWriter.close().catch(console.warn);
+      const writer = this.streamWriter;
       this.streamWriter = null;
+      try {
+        if (typeof (writer as any).abort === 'function') {
+          (writer as any).abort().catch(() => {});
+        } else if (typeof writer.close === 'function') {
+          writer.close().catch(() => {});
+        }
+      } catch (_) {}
     }
     this.isCanceled = false;
     this.isSending = false;
@@ -1167,8 +1275,15 @@ export class TransferEngine {
     this.stopTelemetry();
     this.isSending = false;
     if (this.streamWriter) {
-      this.streamWriter.close().catch(console.warn);
+      const writer = this.streamWriter;
       this.streamWriter = null;
+      try {
+        if (typeof (writer as any).abort === 'function') {
+          (writer as any).abort().catch(() => {});
+        } else if (typeof writer.close === 'function') {
+          writer.close().catch(() => {});
+        }
+      } catch (_) {}
     }
     for (let i = 0; i < this.receiveChunksArray.length; i++) {
       (this.receiveChunksArray as any)[i] = null;

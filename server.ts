@@ -22,6 +22,177 @@ function getLocalIPAddress(): string {
   return '127.0.0.1';
 }
 
+function isValidRoomCode(code: any): boolean {
+  if (typeof code !== 'string') return false;
+  const trimmed = code.trim();
+  if (trimmed.length < 1 || trimmed.length > 16) return false;
+  return /^[a-zA-Z0-9_-]+$/.test(trimmed);
+}
+
+function isValidClientId(id: any): boolean {
+  if (id == null) return true;
+  return typeof id === 'string' && id.length > 0 && id.length <= 64;
+}
+
+function isValidSDP(sdp: any): boolean {
+  if (!sdp || typeof sdp !== 'object') return false;
+  try {
+    const str = JSON.stringify(sdp);
+    return str.length <= 262144; // 256 KB
+  } catch (_) {
+    return false;
+  }
+}
+
+function isValidCandidate(candidate: any): boolean {
+  if (!candidate || typeof candidate !== 'object') return false;
+  try {
+    const str = JSON.stringify(candidate);
+    return str.length <= 16384; // 16 KB
+  } catch (_) {
+    return false;
+  }
+}
+
+function renderErrorHtml(code: number, title: string, description: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>${code} · Nexus Spatial</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #08080a;
+      color: #f1f5f9;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      overflow: hidden;
+      position: relative;
+    }
+    .ambient-glow {
+      position: absolute;
+      width: 450px;
+      height: 450px;
+      background: radial-gradient(circle, rgba(6, 182, 212, 0.12) 0%, rgba(139, 92, 246, 0.08) 50%, transparent 70%);
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      filter: blur(60px);
+      z-index: 0;
+    }
+    .card {
+      position: relative;
+      z-index: 1;
+      max-width: 480px;
+      width: 100%;
+      background: rgba(18, 18, 24, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border-radius: 20px;
+      padding: 40px 32px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+    .code-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      color: #f87171;
+      border-radius: 999px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      margin-bottom: 20px;
+    }
+    .code-badge.warning {
+      background: rgba(245, 158, 11, 0.12);
+      border-color: rgba(245, 158, 11, 0.25);
+      color: #fbbf24;
+    }
+    .code-badge.info {
+      background: rgba(6, 182, 212, 0.12);
+      border-color: rgba(6, 182, 212, 0.25);
+      color: #38bdf8;
+    }
+    .title {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      margin-bottom: 12px;
+    }
+    .desc {
+      font-size: 14px;
+      line-height: 1.6;
+      color: #94a3b8;
+      margin-bottom: 28px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 14px 20px;
+      background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 600;
+      text-decoration: none;
+      border-radius: 12px;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(6, 182, 212, 0.3);
+      transition: all 0.2s ease;
+    }
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(6, 182, 212, 0.45);
+    }
+    .footer-brand {
+      margin-top: 24px;
+      font-size: 11px;
+      color: #475569;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient-glow"></div>
+  <div class="card">
+    <div class="code-badge ${code === 404 ? 'info' : 'warning'}">
+      <span>●</span> CODE ${code}
+    </div>
+    <h1 class="title">${title}</h1>
+    <p class="desc">${description}</p>
+    <a href="/" class="btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Return to Nexus Command
+    </a>
+    <div class="footer-brand">Nexus Spatial Share Security Architecture</div>
+  </div>
+</body>
+</html>`;
+}
+
 async function startServer() {
   const app = express();
   
@@ -39,16 +210,115 @@ async function startServer() {
     httpServer = createHttpServer(app);
     console.log("⚠️ Starting server with HTTP... (No certs found)");
   }
+
+  const PORT = Number(process.env.PORT) || 3000;
+  const MAX_ROOMS = 10000;
+
+  // ── CORS Configuration for Split Cloud Deployments (e.g. Cloudflare Pages + Render) ──
+  const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || "*";
+  const allowedOrigins = allowedOriginsEnv === "*" ? "*" : allowedOriginsEnv.split(',').map(s => s.trim());
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (allowedOrigins === "*") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    } else if (origin && (allowedOrigins.includes(origin) || allowedOrigins.includes("*"))) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+    next();
+  });
+
+  const ioCorsOrigin = allowedOrigins === "*" ? "*" : allowedOrigins;
   const io = new Server(httpServer, {
     cors: {
-      origin: "*",
+      origin: ioCorsOrigin,
       methods: ["GET", "POST"]
     },
     pingTimeout: 120000, // 2 minutes before considering socket dead
     pingInterval: 15000  // ping every 15s
   });
 
-  const PORT = 3000;
+  // ── Full-Stack Security Headers Middleware ──────────────────────────────
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdn.socket.io https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' ws: wss: http: https: blob: data: stun:* turn:*; img-src 'self' data: blob:; media-src 'self' data: blob:; worker-src 'self' blob:;"
+    );
+    next();
+  });
+
+  // ── JSON Body & URL Encoding Size Limits (Anti-DoS) ────────────────────
+  app.use(express.json({ limit: '64kb' }));
+  app.use(express.urlencoded({ extended: true, limit: '64kb' }));
+
+  // ── HTTP Sliding-Window Rate Limiter ──────────────────────────────────
+  const httpRateLimitMap = new Map<string, { count: number, resetTime: number }>();
+  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+  const MAX_HTTP_REQUESTS = 600; // 600 requests per minute per IP
+
+  app.use((req, res, next) => {
+    // Never rate limit Vite internal dev modules, HMR, Socket.IO polling, PeerJS, health endpoints, or static assets
+    const p = req.path;
+    if (
+      p === '/healthz' ||
+      p === '/api/server-info' ||
+      p.startsWith('/socket.io') ||
+      p.startsWith('/peerjs') ||
+      p.startsWith('/@') ||
+      p.startsWith('/src') ||
+      p.startsWith('/node_modules') ||
+      p.startsWith('/__vite') ||
+      /\.(js|css|svg|png|jpg|jpeg|gif|ico|wasm|woff|woff2|ttf|eot)$/i.test(p) ||
+      process.env.NODE_ENV !== "production"
+    ) {
+      return next();
+    }
+
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const record = httpRateLimitMap.get(ip);
+
+    if (!record || now > record.resetTime) {
+      httpRateLimitMap.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW_MS });
+      return next();
+    }
+
+    record.count++;
+    if (record.count > MAX_HTTP_REQUESTS) {
+      const retryAfter = Math.ceil((record.resetTime - now) / 1000);
+      res.setHeader('Retry-After', retryAfter.toString());
+      if (req.path.startsWith('/api/')) {
+        return res.status(429).json({ error: 'Too Many Requests', retryAfter });
+      }
+      return res.status(429).send(renderErrorHtml(429, '429 · Sector Bandwidth Throttled', `Rate limit exceeded. Please wait ${retryAfter} seconds before dispatching additional commands.`));
+    }
+
+    next();
+  });
+
+  // Periodic rate limit cache cleanup (every 5 minutes)
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, record] of httpRateLimitMap.entries()) {
+      if (now > record.resetTime) {
+        httpRateLimitMap.delete(ip);
+      }
+    }
+  }, 5 * 60 * 1000);
+
+  // Dedicated lightweight health check endpoint for cold-start wakeups and monitors
+  app.get("/healthz", (_req, res) => {
+    res.status(200).type("text/plain").send("OK");
+  });
 
   // Set up PeerJS Server
   const peerServer = ExpressPeerServer(httpServer, {
@@ -58,8 +328,31 @@ async function startServer() {
   app.get("/api/server-info", (_req, res) => {
     const localIP = getLocalIPAddress();
     const protocol = isHttps ? "https" : "http";
-    res.json({ localIP, protocol, port: PORT });
+    res.json({ localIP, protocol, port: PORT, status: "online" });
   });
+
+  // ── Automated Keep-Alive Heartbeat (Render/Cloud Free Tier) ───────────────
+  const renderExternalUrl = process.env.RENDER_EXTERNAL_URL;
+  const keepAliveEnabled = process.env.KEEP_ALIVE === "true" || !!renderExternalUrl;
+  if (keepAliveEnabled) {
+    const targetUrl = renderExternalUrl 
+      ? (renderExternalUrl.endsWith('/') ? `${renderExternalUrl}healthz` : `${renderExternalUrl}/healthz`)
+      : `http://localhost:${PORT}/healthz`;
+    
+    console.log(`[KeepAlive] Automated background keep-alive active for ${targetUrl} (every 12m).`);
+    setInterval(async () => {
+      try {
+        const response = await fetch(targetUrl);
+        if (response.ok) {
+          console.log(`[KeepAlive] Heartbeat ping success at ${new Date().toISOString()}`);
+        } else {
+          console.warn(`[KeepAlive] Heartbeat ping returned status ${response.status}`);
+        }
+      } catch (err: any) {
+        console.error(`[KeepAlive] Heartbeat ping error:`, err?.message || err);
+      }
+    }, 12 * 60 * 1000); // 12 minutes
+  }
 
   // Extend room structure to track precise peer lists for WebRTC
   const rooms = new Map<string, { isLocked: boolean, sourceId: string | null, sourceClientId: string | null, peers: string[], offererSocketId: string | null, peerClientIds?: Map<string, string> }>();
@@ -73,6 +366,22 @@ async function startServer() {
   // if they never return do we release it (so the surviving peer can re-grab).
   const pendingLockTimers = new Map<string, ReturnType<typeof setTimeout>>(); // roomId → timer
   const LOCK_GRACE_MS = process.env.LOCK_GRACE_MS ? Number(process.env.LOCK_GRACE_MS) : 45_000;
+
+  // Socket event rate limiter per socket
+  const socketEventCounts = new Map<string, { count: number, resetTime: number }>();
+  const checkSocketRate = (socketId: string): boolean => {
+    const now = Date.now();
+    const record = socketEventCounts.get(socketId);
+    if (!record || now > record.resetTime) {
+      socketEventCounts.set(socketId, { count: 1, resetTime: now + 1000 });
+      return true;
+    }
+    record.count++;
+    if (record.count > 120) {
+      return false; // drop excessive events (> 120/sec)
+    }
+    return true;
+  };
 
   // Socket.io Signaling Logic
   // Re-assert a held lock after a mid-transfer reconnect. The owner is tracked
@@ -105,15 +414,35 @@ async function startServer() {
     });
 
     socket.on("join-room", (data) => {
+      if (!checkSocketRate(socket.id)) {
+        console.warn(`[Server Security] Rate limit exceeded on socket ${socket.id}`);
+        return;
+      }
+
       let roomCode: string;
       let clientId: string | undefined;
 
       if (typeof data === 'string') {
-        roomCode = data;
+        roomCode = data.trim();
       } else if (data && typeof data === 'object') {
-        roomCode = data.roomCode;
-        clientId = data.clientId;
+        roomCode = typeof data.roomCode === 'string' ? data.roomCode.trim() : '';
+        if (isValidClientId(data.clientId)) {
+          clientId = typeof data.clientId === 'string' ? data.clientId.trim() : undefined;
+        }
       } else {
+        socket.emit('room-status', { status: 'error', message: 'Invalid room payload' });
+        return;
+      }
+
+      if (!isValidRoomCode(roomCode)) {
+        console.warn(`[Server Security] Invalid room code rejected: "${roomCode}" from socket ${socket.id}`);
+        socket.emit('room-status', { status: 'error', message: 'Invalid room code format' });
+        return;
+      }
+
+      if (!rooms.has(roomCode) && rooms.size >= MAX_ROOMS) {
+        console.warn(`[Server Security] Max room capacity reached (${MAX_ROOMS}). Rejecting creation for ${roomCode}`);
+        socket.emit('room-status', { status: 'error', message: 'Server is at maximum room capacity' });
         return;
       }
 
@@ -155,26 +484,7 @@ async function startServer() {
         room.peerClientIds = new Map();
       }
 
-      // ── Purge TRULY dead peers (socket object gone entirely) ─────────────────
-      // Only remove peers whose socket no longer exists in the registry.
-      // We do NOT filter on peerSocket.connected because that can be transiently
-      // false during mobile network switches, WebSocket re-handshakes, or React
-      // StrictMode re-mounts that haven't completed reconnect yet.
-      // The "disconnect" server event is the authoritative cleanup — we only
-      // use the purge as a safety net for sockets that vanished without firing it.
-      const genuinelyDeadPeers = room.peers.filter(peerId => {
-        if (peerId === socket.id) return false; // self is never "dead"
-        const peerSocket = io.sockets.sockets.get(peerId);
-        return peerSocket == null || !peerSocket.connected; // socket object is gone entirely or not connected
-      });
-
-      if (genuinelyDeadPeers.length > 0) {
-        room.peers = room.peers.filter(id => !genuinelyDeadPeers.includes(id));
-        genuinelyDeadPeers.forEach(id => room.peerClientIds.delete(id));
-        console.log(`[Server] Room ${roomCode}: purged ${genuinelyDeadPeers.length} dead peer(s), ${room.peers.length} remain`);
-      }
-
-      // Check if this clientId already exists in the room
+      // Check if this clientId already exists in the room and seamlessly replace old socket
       if (clientId) {
         const existingPeerSocketId = Array.from(room.peerClientIds.entries())
           .find(([sid, cid]) => cid === clientId)?.[0];
@@ -184,10 +494,6 @@ async function startServer() {
           room.peerClientIds.delete(existingPeerSocketId);
           socketToRoom.delete(existingPeerSocketId);
 
-          // The replaced socket owned the room lock — it is the SAME clientId
-          // reconnecting, so the lock stays reserved. reassertRoomLock() below
-          // will point sourceId at the fresh socket and re-broadcast roles.
-          // (Previously this cleared the lock, which broke mid-transfer resume.)
           if (room.sourceId === existingPeerSocketId) {
             room.sourceId = null;
           }
@@ -197,12 +503,6 @@ async function startServer() {
             oldSocket.leave(roomCode);
           }
 
-          // This peer dropped and reconnected with a fresh socket. The other
-          // peer's WebRTC path to it is dead, but dc.onclose/ICE failure lags
-          // real network loss by 30s+, so the staying peer still thinks it is
-          // "connected". Notify it now so it resets WebRTC and re-negotiates
-          // on the room-status:ready re-broadcast below — otherwise Drop never
-          // works again after a blip.
           room.peers.forEach(peerId => {
             if (peerId !== socket.id) {
               console.log(`[Server] Peer ${clientId} reconnected with new socket — notifying ${peerId} to reset P2P`);
@@ -211,6 +511,19 @@ async function startServer() {
           });
         }
         room.peerClientIds.set(socket.id, clientId);
+      }
+
+      // ── Purge TRULY dead peers (socket object gone entirely or disconnected, not matching this clientId) ──
+      const genuinelyDeadPeers = room.peers.filter(peerId => {
+        if (peerId === socket.id) return false; // self is never "dead"
+        const peerSocket = io.sockets.sockets.get(peerId);
+        return peerSocket == null || !peerSocket.connected; // socket object is gone entirely or not connected
+      });
+
+      if (genuinelyDeadPeers.length > 0) {
+        room.peers = room.peers.filter(id => !genuinelyDeadPeers.includes(id));
+        genuinelyDeadPeers.forEach(id => room.peerClientIds?.delete(id));
+        console.log(`[Server] Room ${roomCode}: purged ${genuinelyDeadPeers.length} dead peer(s), ${room.peers.length} remain`);
       }
 
       const isReconnect = room.peers.includes(socket.id);
@@ -243,25 +556,18 @@ async function startServer() {
 
       if (room.peers.length === 1 && !isReconnect) {
         // Second peer joins — assign roles deterministically
-        // Capture the first peer's ID BEFORE pushing, so notification goes to the right socket
         const firstPeerId = room.peers[0];
         room.peers.push(socket.id);
         room.offererSocketId = socket.id; // second peer to join is always offerer
 
-        // Tell second peer to create and send offer
         socket.emit('room-status', { status: 'ready', role: 'offerer', code: roomCode });
-        // Tell first peer to expect an offer
         io.to(firstPeerId).emit('room-status', { status: 'ready', role: 'answerer', code: roomCode });
         console.log(`[Server] Room ${roomCode} ready — offerer: ${socket.id}, answerer: ${firstPeerId}`);
         socket.to(roomCode).emit("user-joined", socket.id);
-        // If a lock was being held (mid-transfer reconnect), restore roles now.
         reassertRoomLock(roomCode);
         return;
       }
 
-      // If reconnecting, let them resume without kicking.
-      // Broadcast to every peer so the staying side re-learns roles instantly
-      // instead of waiting on the client-side health-check (8-24s).
       if (isReconnect) {
         const status = room.peers.length === 2 ? 'ready' : 'waiting';
         if (!room.offererSocketId || !room.peers.includes(room.offererSocketId)) {
@@ -275,7 +581,6 @@ async function startServer() {
           });
         });
         console.log(`[Server] Reconnect: ${socket.id} rejoining room ${roomCode}`);
-        // If a lock was being held (mid-transfer reconnect), restore roles now.
         reassertRoomLock(roomCode);
         return;
       }
@@ -285,27 +590,41 @@ async function startServer() {
       socket.emit('room-status', { status: 'full' });
     });
 
-    // ── WebRTC Signaling Relays ──────────────────────────────────────────────────
-    socket.on("offer", ({ roomId, sdp }) => {
+    // ── WebRTC Signaling Relays with Size & Rate Validation ─────────────────
+    socket.on("offer", (payload) => {
+      if (!checkSocketRate(socket.id)) return;
+      if (!payload || typeof payload !== 'object') return;
+      const { roomId, sdp } = payload;
+      if (!isValidRoomCode(roomId) || !isValidSDP(sdp)) return;
+      if (!rooms.has(roomId)) return;
       socket.to(roomId).emit("offer", { sdp });
     });
     
-    socket.on("answer", ({ roomId, sdp }) => {
+    socket.on("answer", (payload) => {
+      if (!checkSocketRate(socket.id)) return;
+      if (!payload || typeof payload !== 'object') return;
+      const { roomId, sdp } = payload;
+      if (!isValidRoomCode(roomId) || !isValidSDP(sdp)) return;
+      if (!rooms.has(roomId)) return;
       socket.to(roomId).emit("answer", { sdp });
     });
 
-    socket.on("ice-candidate", ({ roomId, candidate }) => {
+    socket.on("ice-candidate", (payload) => {
+      if (!checkSocketRate(socket.id)) return;
+      if (!payload || typeof payload !== 'object') return;
+      const { roomId, candidate } = payload;
+      if (!isValidRoomCode(roomId) || !isValidCandidate(candidate)) return;
+      if (!rooms.has(roomId)) return;
       socket.to(roomId).emit("ice-candidate", { candidate });
     });
 
-
     socket.on("grabbed", (roomCode) => {
+      if (!checkSocketRate(socket.id)) return;
+      if (!isValidRoomCode(roomCode)) return;
       const room = rooms.get(roomCode);
       if (room && !room.isLocked) {
         room.isLocked = true;
         room.sourceId = socket.id;
-        // Remember the OWNER by clientId — it survives socket reconnects, so a
-        // mid-transfer disconnect can re-assert the same grab on rejoin.
         room.sourceClientId = room.peerClientIds?.get(socket.id) ?? null;
         console.log(`Grab event in room: ${roomCode} by ${socket.id}`);
         io.in(roomCode).emit("global-lock", { sourceId: socket.id });
@@ -313,6 +632,8 @@ async function startServer() {
     });
 
     socket.on("dropped", (roomCode) => {
+      if (!checkSocketRate(socket.id)) return;
+      if (!isValidRoomCode(roomCode)) return;
       const room = rooms.get(roomCode);
       if (room && room.isLocked) {
         room.isLocked = false;
@@ -324,6 +645,7 @@ async function startServer() {
     });
 
     socket.on("leave-room", () => {
+      if (!checkSocketRate(socket.id)) return;
       const roomId = socketToRoom.get(socket.id);
       if (!roomId) return;
 
@@ -349,13 +671,11 @@ async function startServer() {
         }
         console.log(`[Server] Room ${roomId} destroyed immediately because it is empty`);
       } else {
-        // Notify remaining peers that the user left
         room.peers.forEach(peerId => {
           console.log(`[Server] Notifying ${peerId} of peer leave in room ${roomId}`);
           io.to(peerId).emit('peer-disconnected');
           io.to(peerId).emit('room-status', { status: 'waiting', role: 'answerer', code: roomId });
         });
-        // Reset room lock state
         room.isLocked = false;
         room.sourceId = null;
         room.sourceClientId = null;
@@ -364,6 +684,7 @@ async function startServer() {
 
     socket.on("disconnect", () => {
       console.log("User disconnected:", socket.id);
+      socketEventCounts.delete(socket.id);
       
       const roomId = socketToRoom.get(socket.id);
       if (!roomId) return;
@@ -373,23 +694,11 @@ async function startServer() {
       const room = rooms.get(roomId);
       if (!room) return;
 
-      // Immediately remove this socket from the room's active peer lists
       room.peers = room.peers.filter(id => id !== socket.id);
-      if (room.peerClientIds) {
-        room.peerClientIds.delete(socket.id);
-      }
+      // Note: We deliberately retain room.peerClientIds across disconnects so the rejoining socket
+      // can be recognized by its clientId and seamlessly replace its previous socket reference.
+      // Explicit departures (leave-room) and room destruction clean up peerClientIds.
 
-      // Offerer state is always cleared on departure so WebRTC can re-negotiate.
-      //
-      // Mid-transfer reconnect preservation: if the SOURCE (lock owner) is the
-      // one that dropped, we keep the lock reserved under its clientId for a
-      // grace window. When that client rejoins, the join-room handler re-asserts
-      // the lock and re-broadcasts global-lock, letting both peers restore their
-      // roles and resume the transfer. Only if the owner never returns does the
-      // timer release the room. If instead a NON-source peer drops leaving one
-      // peer behind, the lock survives only when the surviving peer is the owner
-      // (their grab is still valid); otherwise the lock is meaningless alone and
-      // clears so a fresh grab is possible.
       if (room.sourceId === socket.id) {
         const sourceClientId = room.sourceClientId;
         room.sourceId = null;
@@ -413,10 +722,7 @@ async function startServer() {
           room.isLocked = false;
         }
       } else if (room.peers.length < 2) {
-        // The non-source peer left, leaving only one peer. If the surviving peer
-        // owns the lock, keep it (their grab is still valid); otherwise the room
-        // has no valid lock owner and the lock means nothing without a peer.
-        if (room.sourceId !== room.peers[0]) {
+        if (!pendingLockTimers.has(roomId) && room.sourceId !== room.peers[0]) {
           room.isLocked = false;
           room.sourceId = null;
           room.sourceClientId = null;
@@ -426,14 +732,12 @@ async function startServer() {
         room.offererSocketId = room.peers[0] ?? null;
       }
 
-      // Notify any remaining peers immediately so they reset signaling/P2P
       room.peers.forEach(peerId => {
         console.log(`[Server] User ${socket.id} disconnected — notifying remaining peer ${peerId} in room ${roomId}`);
         io.to(peerId).emit('peer-disconnected');
         io.to(peerId).emit('room-status', { status: 'waiting', role: 'answerer', code: roomId });
       });
 
-      // If the room is now completely empty, start the grace timer to destroy it
       if (room.peers.length === 0) {
         const GRACE_MS = 120_000;
         console.log(`[Server] Room ${roomId} is empty — starting ${GRACE_MS/1000}s grace timer to destroy it`);
@@ -449,7 +753,6 @@ async function startServer() {
 
         pendingDestroyTimers.set(roomId, timer);
       } else {
-        // Cancel any pending destroy timer since the room is not empty
         const existing = pendingDestroyTimers.get(roomId);
         if (existing) {
           clearTimeout(existing);
@@ -460,45 +763,51 @@ async function startServer() {
     });
   });
 
-  // Vite middleware for development
+  // Catch-all 404 for unmatched API endpoints
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: "Endpoint Not Found", status: 404, path: req.baseUrl + req.path });
+  });
+
+  // Vite middleware for development vs Static files for production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : {
+          server: httpServer,
+        },
+      },
+      appType: "custom",
     });
 
-    app.get('*', async (req, res, next) => {
+    // 1. Mount vite.middlewares FIRST so Vite handles module imports, HMR, assets, dependencies
+    app.use(vite.middlewares);
+
+    // 2. Any non-module request falls through to serve transformed index.html
+    app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
-      // Let Vite HMR and module loading fall through to vite.middlewares
-      if (url.startsWith('/src/') || url.startsWith('/@') || /\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|json|map)$/i.test(url)) {
-        return next();
-      }
-      console.log(`[DevServer] Intercepted HTML request: ${url}`);
       try {
         const indexHtmlPath = path.resolve(process.cwd(), 'index.html');
         let html = fs.readFileSync(indexHtmlPath, 'utf-8');
-        console.log(`[DevServer] Original HTML length: ${html.length}`);
         html = await vite.transformIndexHtml(url, html);
-        if (!html.includes('__vite_plugin_react_preamble_installed__')) {
-          console.log('[DevServer] Injecting React Refresh preamble manually');
-          const preamble = `
+        
+        const preamble = `
 <script type="module">
-  import { injectIntoGlobalHook } from "/@react-refresh";
-  injectIntoGlobalHook(window);
+  import RefreshRuntime from "/@react-refresh";
+  RefreshRuntime.injectIntoGlobalHook(window);
   window.$RefreshReg$ = () => {};
   window.$RefreshSig$ = () => (type) => type;
   window.__vite_plugin_react_preamble_installed__ = true;
 </script>
-          `;
-          const localIP = getLocalIPAddress();
-          const ipScript = `\n<script>window.__SERVER_LOCAL_IP__ = "${localIP}";</script>`;
-          html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + preamble + ipScript);
-        } else {
-          const localIP = getLocalIPAddress();
-          const ipScript = `\n<script>window.__SERVER_LOCAL_IP__ = "${localIP}";</script>`;
+`;
+        const localIP = getLocalIPAddress();
+        const ipScript = `\n<script>window.__SERVER_LOCAL_IP__ = "${localIP}";</script>`;
+        if (!html.includes('__vite_plugin_react_preamble_installed__')) {
+          html = html.replace('<head>', '<head>' + preamble);
+        }
+        if (!html.includes('__SERVER_LOCAL_IP__')) {
           html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + ipScript);
         }
-        console.log(`[DevServer] Transformed HTML length: ${html.length}`);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
       } catch (e) {
         console.error(`[DevServer] Transform error:`, e);
@@ -506,8 +815,6 @@ async function startServer() {
         next(e);
       }
     });
-
-    app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
@@ -522,10 +829,34 @@ async function startServer() {
         }
         res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
       } else {
-        res.sendFile(indexPath);
+        res.status(404).send(renderErrorHtml(404, '404 · Sector Orbit Lost', 'The requested nexus asset or sector was not found on this deployment.'));
       }
     });
   }
+
+  // ── Global Express 500 Error Handler ────────────────────────────────────
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error(`[Server Subsystem Error] ${req.method} ${req.url}:`, err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    if (req.path.startsWith('/api/')) {
+      return res.status(500).json({ error: "Internal Server Error", status: 500 });
+    }
+    res.status(500).send(renderErrorHtml(500, '500 · Core Subsystem Error', 'An unexpected system anomaly occurred within the spatial network bridge.'));
+  });
+
+  httpServer.on("error", (err: any) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`\n❌ Error: Port ${PORT} is already in use by another process.`);
+      console.error(`👉 To free port ${PORT} on Windows PowerShell, run:`);
+      console.error(`   Get-Process -Id (Get-NetTCPConnection -LocalPort ${PORT}).OwningProcess | Stop-Process -Force\n`);
+      process.exit(1);
+    } else {
+      console.error(`[Server Listen Error]:`, err);
+      process.exit(1);
+    }
+  });
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     const protocol = isHttps ? "https" : "http";

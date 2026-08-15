@@ -79,6 +79,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Nexus Spatial</title>
   <script>
+    window.$RefreshReg$ = window.$RefreshReg$ || function() {};
+    window.$RefreshSig$ = window.$RefreshSig$ || function() { return function(type) { return type; }; };
+    window.__vite_plugin_react_preamble_installed__ = true;
     (function() {
       try {
         fetch('/api/server-info')
@@ -94,6 +97,58 @@
           .catch(function() {});
       } catch (_) {}
     })();
+
+    // Browser Compatibility Guard & Global Unhandled Handlers
+    window.checkBrowserCompatibility = function() {
+      var isSupported = true;
+      var reasons = [];
+      if (!window.RTCPeerConnection) {
+        isSupported = false;
+        reasons.push("RTCPeerConnection (WebRTC)");
+      }
+      if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') {
+        isSupported = false;
+        reasons.push("Web Cryptography");
+      }
+      if (!window.WebSocket && !window.io) {
+        isSupported = false;
+        reasons.push("WebSocket Signaling");
+      }
+      try {
+        var canvas = document.createElement('canvas');
+        if (!canvas.getContext('2d')) {
+          isSupported = false;
+          reasons.push("Canvas 2D Rendering");
+        }
+      } catch (_) {
+        isSupported = false;
+        reasons.push("Canvas Subsystem");
+      }
+      if (!isSupported) {
+        console.warn("[Nexus Compatibility] Incompatible browser environment:", reasons.join(", "));
+        var screen = document.getElementById('unsupported-browser-screen');
+        if (screen) {
+          screen.classList.add('visible');
+          var reasonsEl = document.getElementById('unsupported-reasons');
+          if (reasonsEl) {
+            reasonsEl.textContent = "Missing: " + reasons.join(", ");
+          }
+        }
+      }
+      return isSupported;
+    };
+
+    window.addEventListener('DOMContentLoaded', function() {
+      window.checkBrowserCompatibility();
+    });
+
+    window.addEventListener('unhandledrejection', function(event) {
+      console.warn('[Nexus Global Rejection]', event.reason);
+    });
+
+    window.addEventListener('error', function(event) {
+      console.warn('[Nexus Global Error]', event.message, event.filename, event.lineno);
+    });
   </script>
   <!-- Ch7: Socket.IO wiring active -->
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -464,6 +519,11 @@
       transition: opacity 0.35s ease;
     }
     #sender-screen.visible { opacity: 1; pointer-events: all; }
+    #sender-screen:not(.visible) {
+      display: none !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
 
 
     /* ── DROP ZONE ── */
@@ -870,9 +930,32 @@
       position: fixed; inset: 0; z-index: 24; pointer-events: none; display: none;
     }
 
-    /* Drop zone is removed from layout for the whole transfer, on both roles. */
+    /* Drop zone and sender workspace are completely removed from layout during active transfer, receive animation, or receiver mode */
+    body.transferring #sender-screen,
     body.transferring #drop-zone,
-    body.transferring #queue-wrap { display: none !important; }
+    body.transferring #queue-wrap,
+    body:has(#receive-progress.visible) #sender-screen,
+    body:has(#receive-progress.visible) #drop-zone,
+    body:has(#receive-progress.visible) #queue-wrap,
+    body:has(#receiver-screen.visible) #sender-screen,
+    body:has(#receiver-screen.visible) #drop-zone,
+    body:has(#receiver-screen.visible) #queue-wrap,
+    body:has(#receive-success.visible) #sender-screen,
+    body:has(#receive-success.visible) #drop-zone,
+    body:has(#receive-success.visible) #queue-wrap {
+      display: none !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+
+    body:has(#progress-screen.visible) #receiver-screen,
+    body:has(#progress-screen.visible) #receive-progress,
+    body:has(#progress-screen.visible) #receive-success,
+    body:has(#progress-screen.visible) #gravity-well-ui {
+      display: none !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
 
     .receive-success-icon {
       width: 72px; height: 72px; border-radius: 50%;
@@ -1195,6 +1278,21 @@
     }
     .toast-close:hover { color: var(--text); background: rgba(255,255,255,0.08); }
 
+    .toast-action-btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      margin-top: 8px; padding: 4px 10px;
+      background: rgba(6, 182, 212, 0.15);
+      border: 1px solid rgba(6, 182, 212, 0.35);
+      color: #38bdf8; font-size: 11px; font-weight: 600;
+      border-radius: 6px; cursor: pointer; transition: all 0.15s ease;
+      font-family: inherit;
+    }
+    .toast-action-btn:hover {
+      background: rgba(6, 182, 212, 0.28);
+      border-color: rgba(6, 182, 212, 0.55);
+      color: #ffffff;
+    }
+
     /* ── TRANSFER FAILED / ERROR CENTER STATE ── */
     #transfer-error-screen {
       position: fixed; inset: 0; z-index: 26;
@@ -1241,6 +1339,52 @@
     }
     .btn-error-home:hover { color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.2); background: rgba(255,255,255,0.04); }
 
+    /* ── UNSUPPORTED BROWSER GUARD SCREEN ── */
+    #unsupported-browser-screen {
+      position: fixed; inset: 0; z-index: 99999;
+      display: none; align-items: center; justify-content: center;
+      background: #08080a; padding: 24px;
+      backdrop-filter: blur(24px);
+    }
+    #unsupported-browser-screen.visible {
+      display: flex;
+    }
+    .unsupported-card {
+      max-width: 480px; width: 100%;
+      background: rgba(18, 18, 24, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 20px; padding: 36px 28px;
+      text-align: center;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.8);
+    }
+    .unsupported-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 999px;
+      background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #f87171; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      margin-bottom: 18px; text-transform: uppercase; font-weight: 600;
+    }
+    .unsupported-title {
+      font-size: 22px; font-weight: 700; color: #fff; margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+    .unsupported-text {
+      font-size: 13.5px; line-height: 1.6; color: #94a3b8; margin-bottom: 18px;
+    }
+    .unsupported-reasons {
+      font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+      color: #fca5a5; background: rgba(239, 68, 68, 0.08);
+      border: 1px dashed rgba(239, 68, 68, 0.25); border-radius: 8px;
+      padding: 8px 12px; margin-bottom: 20px;
+    }
+    .browser-links { text-align: left; }
+    .browser-rec { font-size: 12px; color: #64748b; margin-bottom: 8px; font-weight: 600; }
+    .browser-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+    .browser-tag {
+      font-size: 12px; color: #cbd5e1; background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;
+      padding: 4px 10px; font-weight: 500;
+    }
 
     /* ── LARGE FILE WARNING MODAL ── */
     #large-file-modal {
@@ -1782,6 +1926,32 @@
   <div class="error-btns">
     <button class="btn-error-retry" id="btn-error-retry">Try Again</button>
     <button class="btn-error-home" id="btn-error-home">Return to Home</button>
+  </div>
+</div>
+
+<!-- UNSUPPORTED BROWSER GUARD SCREEN -->
+<div id="unsupported-browser-screen">
+  <div class="unsupported-card">
+    <div class="unsupported-badge">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="12" y1="8" x2="12" y2="12"/>
+        <line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <span>Compatibility Guard</span>
+    </div>
+    <h2 class="unsupported-title">System Architecture Incompatible</h2>
+    <p class="unsupported-text">Nexus Spatial Share requires modern WebRTC P2P Data Channels, Cryptography primitives, and hardware-accelerated Canvas to establish spatial transfers.</p>
+    <div class="unsupported-reasons" id="unsupported-reasons"></div>
+    <div class="browser-links">
+      <div class="browser-rec">Recommended Browsers:</div>
+      <div class="browser-tags">
+        <span class="browser-tag">Google Chrome</span>
+        <span class="browser-tag">Mozilla Firefox</span>
+        <span class="browser-tag">Apple Safari</span>
+        <span class="browser-tag">Microsoft Edge</span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2344,7 +2514,7 @@
     if ((host === 'localhost' || host === '127.0.0.1') && window.__SERVER_LOCAL_IP__ && window.__SERVER_LOCAL_IP__ !== '127.0.0.1') {
       host = window.__SERVER_LOCAL_IP__;
     }
-    return `${protocol}//${host}${port}${window.location.pathname}?room=${code}`;
+    return `${protocol}//${host}${port}${window.location.pathname}?room=${code}&auto=1`;
   }
 
   function checkDevTip(hasCode, url){
@@ -2422,6 +2592,15 @@
     if(code.length<4){document.getElementById('join-error').textContent='Enter all 4 digits.';return;}
     if(code==='0000'){showRoomError('Room not found.');return;}
     if(code==='9999'){showRoomError('Room is full.');return;}
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('nexus_active_room', code);
+      }
+      const targetURL = window.location.pathname + '?room=' + code;
+      if (window.location.search !== targetURL) {
+        window.history.replaceState({}, document.title, targetURL);
+      }
+    } catch (_) {}
     // Always use real socket if defined, buffer emit if disconnected
     if (window._socketJoinRoom) {
       if (window._socketIsConnected && !window._socketIsConnected()) {
@@ -2467,6 +2646,7 @@
   });
 
   // transitionToReceiver — mirrors initReceiverMode but called from home flow
+  window.__nexusCurrentScreen = 'home';
   window.transitionToReceiver = function(code) {
     if (typeof code === 'object') {
       console.warn('transitionToReceiver received object:', code);
@@ -2477,6 +2657,16 @@
     }
     if (code === '[object Object]') {
       code = '';
+    }
+    // KTD2: synchronously record screen identity for App.tsx (replaces the
+    // delayed DOM-class read that only flips true 340ms after a transition).
+    window.__nexusCurrentScreen = 'receiver';
+    // KTD4: idempotent — if we are already showing the receiver screen and no
+    // receive is in flight, do not re-run the work or re-arm the shared
+    // last-wins transition timer (a reconnect burst would churn it).
+    const rxActiveNow = (typeof window.getRxTransferActive === 'function' && window.getRxTransferActive());
+    if (document.getElementById('receiver-screen').classList.contains('visible') && !rxActiveNow) {
+      return;
     }
     document.getElementById('logo-home').style.display = 'none';
     document.getElementById('logo-sender').style.display = 'flex';
@@ -2490,17 +2680,30 @@
     document.getElementById('card-bloom').style.display = 'none';
 
     // Hide sender and progress/success screens to prevent overlap
-    document.getElementById('sender-screen').classList.remove('visible');
-    document.getElementById('progress-screen').classList.remove('visible');
-    document.getElementById('success-screen').classList.remove('visible');
+    const ss = document.getElementById('sender-screen');
+    if (ss) {
+      ss.classList.remove('visible');
+      ss.style.display = 'none';
+    }
+    const dz = document.getElementById('drop-zone');
+    if (dz) {
+      dz.style.display = 'none';
+    }
+    const qw = document.getElementById('queue-wrap');
+    if (qw) {
+      qw.style.display = 'none';
+      qw.classList.remove('visible');
+    }
+    document.getElementById('progress-screen')?.classList.remove('visible');
+    document.getElementById('success-screen')?.classList.remove('visible');
     // Do not strip the ETA/cancel overlay if a receive is genuinely in flight
     // (same protection as transitionToSender). Only resetTransferVisuals may
     // clear it once the receive has started.
     if (!(typeof window.getRxTransferActive === 'function' && window.getRxTransferActive())) {
-      document.getElementById('receive-progress').classList.remove('visible');
+      document.getElementById('receive-progress')?.classList.remove('visible');
     }
-    document.getElementById('receive-success').classList.remove('visible');
-    document.getElementById('transfer-error-screen').classList.remove('visible');
+    document.getElementById('receive-success')?.classList.remove('visible');
+    document.getElementById('transfer-error-screen')?.classList.remove('visible');
 
     // Re-wire Leave button to leaveReceiver once that IIFE has defined it
     document.getElementById('btn-leave').onclick = () => {
@@ -2510,15 +2713,22 @@
     // Cancel any pending sender/receiver screen-transition timer so the LAST
     // transition wins. Without this, transitionToSender's +320ms timer can fire
     // after we hide sender-screen, leaving BOTH full-screen layers visible and
-    // overlapped (the receiver animation buries the drop zone). This exact race
-    // fired during reconnects: room-status:ready → transitionToSender, then
-    // reassertRoomLock → global-lock → transitionToReceiver within 320-340ms.
+    // overlapped (the receiver animation buries the drop zone).
     if (window.__nexusScreenTransitionTimer) {
       clearTimeout(window.__nexusScreenTransitionTimer);
+      window.__nexusScreenTransitionTimer = null;
     }
     window.__nexusScreenTransitionTimer = setTimeout(() => {
       window.__nexusScreenTransitionTimer = null;
-      document.getElementById('receiver-screen').classList.add('visible');
+      if (!(typeof window.getRxTransferActive === 'function' && window.getRxTransferActive()) &&
+          !document.getElementById('receive-progress')?.classList.contains('visible') &&
+          !document.getElementById('receive-success')?.classList.contains('visible')) {
+        const rs = document.getElementById('receiver-screen');
+        if (rs) {
+          rs.style.display = '';
+          rs.classList.add('visible');
+        }
+      }
       window.updatePanelToggle?.();
       document.getElementById('rx-dev-panel')?.classList.add('visible');
     }, 340);
@@ -2533,30 +2743,48 @@
   };
   document.getElementById('btn-join').addEventListener('click',joinRoom);
   document.getElementById('btn-create').addEventListener('click',()=>{
-    if (document.readyState === 'loading' || typeof window._socketCreateRoom !== 'function') {
+    if (document.readyState === 'loading') {
       document.getElementById('join-error').textContent = 'Please wait, the website is still loading...';
       return;
     }
-    clearError();const code=String(Math.floor(1000+Math.random()*9000));
+    clearError();
+    const typedCode = getCode();
+    const code = (typedCode && /^\d{4}$/.test(typedCode)) ? typedCode : String(Math.floor(1000+Math.random()*9000));
     resetGlobe();for(let i=0;i<4;i++){setDigit(i,code[i]);setTimeout(()=>triggerGlobe(i),i*80);}
     setTimeout(updateQR,400);
-    // Always use real socket if defined, buffer emit if disconnected
-    setTimeout(() => {
-      if (window._socketCreateRoom) {
-        if (window._socketIsConnected && !window._socketIsConnected()) {
-          document.getElementById('join-error').textContent='Connecting to signaling server... please wait.';
-        }
-        window._socketCreateRoom(code);
-      } else {
-        showRolePicker(code);
-      }
-    }, 600);
+    // Create Room only fills the code + QR. The user then clicks Join Room to
+    // actually join, so a disconnected device is never silently joined into a
+    // room it did not intend to enter.
   });
   function initURLRoomJoin(){
     try {
       const params = new URLSearchParams(window.location.search);
-      const urlRoom = params.get('room');
-      if (urlRoom && /^\d{4}$/.test(urlRoom)) {
+      let urlRoom = params.get('room');
+      const autoJoin = params.get('auto');
+      // Mobile tab-restore: a backgrounded page (file picker / screen off) can
+      // be discarded and reloaded by the browser. If the page went hidden while
+      // inside a room, rejoin that room on load instead of dropping the user to
+      // an empty home screen. The marker is set on visibilitychange→hidden and
+      // cleared on return-to-foreground.
+      const pendingRestore = (typeof sessionStorage !== 'undefined') && sessionStorage.getItem('nexus_pending_restore') === '1';
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('nexus_pending_restore');
+      }
+      // Read the stored active room before any cleanup below removes it.
+      const storedRoom = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem('nexus_active_room') : null;
+      if (!urlRoom) {
+        if (typeof sessionStorage !== 'undefined' && !pendingRestore) {
+          sessionStorage.removeItem('nexus_active_room');
+        }
+      }
+
+      const shouldJoin = urlRoom && /^\d{4}$/.test(urlRoom) && (autoJoin === '1' || pendingRestore || storedRoom === urlRoom);
+      const shouldRestoreStored = !urlRoom && storedRoom && /^\d{4}$/.test(storedRoom) && pendingRestore;
+
+      const effectiveRoom = shouldJoin ? urlRoom : (shouldRestoreStored ? storedRoom : null);
+
+      if (effectiveRoom) {
+        urlRoom = effectiveRoom;
         for (let i = 0; i < 4; i++) {
           setDigit(i, urlRoom[i]);
           triggerGlobe(i);
@@ -2564,8 +2792,13 @@
         updateQR();
 
         try {
-          const cleanURL = window.location.origin + window.location.pathname;
-          window.history.replaceState({}, document.title, cleanURL);
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem('nexus_active_room', urlRoom);
+          }
+          const targetURL = window.location.pathname + '?room=' + urlRoom;
+          if (window.location.search !== targetURL) {
+            window.history.replaceState({}, document.title, targetURL);
+          }
         } catch (_) {}
 
         const attemptJoin = () => {
@@ -2585,9 +2818,18 @@
             }
           }, 100);
         }
+      } else if (urlRoom && /^\d{4}$/.test(urlRoom)) {
+        try {
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.removeItem('nexus_active_room');
+          }
+          if (window.location.search !== '') {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        } catch (_) {}
       }
     } catch (e) {
-      console.error('Failed to parse room code from URL:', e);
+      console.error('Failed to parse room code from URL or storage:', e);
     }
   }
 
@@ -2847,6 +3089,29 @@
     if (code === '[object Object]') {
       code = '';
     }
+    // If receiver screen is active or an active receive transfer or receive modal is in flight, do not flip screen identity or UI to sender workspace
+    const isRxActiveNow = (window.__nexusCurrentScreen === 'receiver') ||
+                          (typeof window.getRxTransferActive === 'function' && window.getRxTransferActive()) ||
+                          document.getElementById('receive-progress')?.classList.contains('visible') ||
+                          document.getElementById('receive-success')?.classList.contains('visible');
+    if (isRxActiveNow) {
+      if (typeof window.transitionToReceiver === 'function') {
+        window.transitionToReceiver(code);
+      }
+      return;
+    }
+    // KTD2: synchronously record screen identity for App.tsx.
+    window.__nexusCurrentScreen = 'sender';
+    // KTD4: idempotent — if we are already showing the sender screen and no
+    // transfer state changed, do not re-run the work or re-arm the shared
+    // last-wins transition timer (a reconnect burst would churn it).
+    const senderScreen = document.getElementById('sender-screen');
+    const isLocked = (typeof window._socketIsLocked === 'function' && window._socketIsLocked());
+    const isTxActive = isTransferring || (typeof window.getTransferPhase === 'function' && window.getTransferPhase() !== 'idle') || document.getElementById('progress-screen')?.classList.contains('visible');
+    const isRxActive = (typeof window.getRxTransferActive === 'function' && window.getRxTransferActive()) || (isLocked && window.__nexusCurrentScreen === 'receiver') || document.getElementById('receive-progress')?.classList.contains('visible') || document.getElementById('receive-success')?.classList.contains('visible');
+    if (senderScreen.classList.contains('visible') && !isTxActive && !isRxActive) {
+      return;
+    }
     document.getElementById('logo-home').style.display = 'none';
     document.getElementById('logo-sender').style.display = 'flex';
     document.getElementById('top-bar-center').style.display = 'flex';
@@ -2864,19 +3129,13 @@
     document.getElementById('receiver-screen').classList.remove('visible');
     window.updatePanelToggle?.();
     document.getElementById('rx-dev-panel')?.classList.remove('visible');
+
     // Do not tear down the in-flight progress overlay on a mid-transfer rejoin
-    // (the source socket reconnecting after backgrounding). Removing it here
-    // stranded the source with a running transfer but no cancel button or
-    // progress ring — only resetTransferVisuals is allowed to clear it.
-    if (!isTransferring) {
+    if (!isTxActive) {
       document.getElementById('progress-screen').classList.remove('visible');
     }
     document.getElementById('success-screen').classList.remove('visible');
-    // The receiver's ETA/cancel overlay gets the same protection: when the
-    // phone's socket reconnects mid-receive, room-status re-fires and lands
-    // here. Stripping #receive-progress then leaves the receiver with a live
-    // transfer but no cancel button — only resetTransferVisuals may clear it.
-    if (!(typeof window.getRxTransferActive === 'function' && window.getRxTransferActive())) {
+    if (!isRxActive) {
       document.getElementById('receive-progress').classList.remove('visible');
     }
     document.getElementById('receive-success').classList.remove('visible');
@@ -2887,11 +3146,33 @@
     // where both fixed full-screen layers end up .visible and overlap.
     if (window.__nexusScreenTransitionTimer) {
       clearTimeout(window.__nexusScreenTransitionTimer);
-    }
-    window.__nexusScreenTransitionTimer = setTimeout(() => {
       window.__nexusScreenTransitionTimer = null;
-      document.getElementById('sender-screen').classList.add('visible');
-    }, 320);
+    }
+    if (!isTxActive && !isRxActive) {
+      window.__nexusScreenTransitionTimer = setTimeout(() => {
+        window.__nexusScreenTransitionTimer = null;
+        const currentRxActive = (typeof window.getRxTransferActive === 'function' && window.getRxTransferActive()) ||
+                                document.getElementById('receive-progress')?.classList.contains('visible') ||
+                                document.getElementById('receive-success')?.classList.contains('visible') ||
+                                document.getElementById('receiver-screen')?.classList.contains('visible') ||
+                                document.body.classList.contains('transferring');
+        const currentTxActive = isTransferring || (typeof window.getTransferPhase === 'function' && window.getTransferPhase() !== 'idle') ||
+                                document.getElementById('progress-screen')?.classList.contains('visible');
+        if (!currentRxActive && !currentTxActive) {
+          const ss = document.getElementById('sender-screen');
+          if (ss) {
+            ss.style.display = '';
+            ss.classList.add('visible');
+          }
+          const dz = document.getElementById('drop-zone');
+          if (dz) {
+            dz.style.display = '';
+            dz.style.opacity = '1';
+            dz.style.pointerEvents = 'all';
+          }
+        }
+      }, 320);
+    }
   };
 
   /* ── FILE HELPERS ── */
@@ -2979,28 +3260,49 @@
     setTimeout(() => {
       // Real WebRTC backend is handling this in App.tsx
       console.log("[index.html] Real backend active, showing progress screen.");
-      const ps = document.getElementById('progress-screen');
-      if (ps) {
-        // Initialize progress DOM visuals
-        const firstName = fileQueue.length > 0 ? fileQueue[0].name : 'file';
-        const fileLabel = fileQueue.length > 1 ? `File 1 of ${fileQueue.length}` : '';
-        const fileLabelEl = document.getElementById('progress-file-label');
-        if (fileLabelEl) fileLabelEl.textContent = fileLabel;
-        
-        const filenameEl = document.getElementById('progress-filename');
-        if (filenameEl) {
-          filenameEl.textContent = fileQueue.length > 1 ? `Sending ${fileQueue.length} files...` : firstName;
-        }
-        const statsEl = document.getElementById('progress-stats');
-        if (statsEl) statsEl.textContent = '— Sending…';
-        
-        if (typeof window.updateSenderProgress === 'function') {
-          window.updateSenderProgress(0, 0);
-        }
-        ps.classList.add('visible');
-      }
+      window.showSenderProgress();
     }, 500);
   });
+
+  /* ── SHOW SENDER PROGRESS (initial send + resume) ── */
+  window.showSenderProgress = function(file, batchIndex, batchCount) {
+    if (window.__nexusScreenTransitionTimer) {
+      clearTimeout(window.__nexusScreenTransitionTimer);
+      window.__nexusScreenTransitionTimer = null;
+    }
+    const ps = document.getElementById('progress-screen');
+    if (!ps) return;
+    const count = typeof batchCount === 'number' ? batchCount : (fileQueue.length || 1);
+    const idx = typeof batchIndex === 'number' ? batchIndex : 0;
+    const curFile = file || (fileQueue && fileQueue[idx]) || (fileQueue && fileQueue[0]);
+    const firstName = curFile ? curFile.name : 'file';
+
+    const fileLabelEl = document.getElementById('progress-file-label');
+    if (fileLabelEl) fileLabelEl.textContent = count > 1 ? `File ${idx + 1} of ${count}` : '';
+
+    const filenameEl = document.getElementById('progress-filename');
+    if (filenameEl) {
+      filenameEl.textContent = count > 1 ? (curFile ? curFile.name : `Sending files...`) : firstName;
+    }
+    const statsEl = document.getElementById('progress-stats');
+    if (statsEl && (!statsEl.textContent || statsEl.textContent.includes('paused') || statsEl.textContent.includes('Reconnecting'))) {
+      statsEl.textContent = '— Sending…';
+    }
+
+    document.getElementById('sender-screen')?.classList.remove('visible');
+    document.getElementById('control-panel')?.classList.remove('visible');
+    document.getElementById('transfer-error-screen')?.classList.remove('visible');
+    document.getElementById('home-screen')?.classList.add('hidden');
+
+    const cancelBtn = document.getElementById('btn-cancel');
+    if (cancelBtn) cancelBtn.style.display = '';
+    const cancelConf = document.getElementById('cancel-confirm');
+    if (cancelConf) cancelConf.classList.remove('visible');
+
+    ps.classList.add('visible');
+    window.enterTransferVisuals('out');
+    isTransferring = true;
+  };
 
   /* ── SENDER PROGRESS HOOK ── */
   window.updateSenderProgress = function(progress, speedMbps, batchIndex, batchCount) {
@@ -3115,8 +3417,8 @@
 
     // Exit path 2 of 7 — cancel from either side.
     window.resetTransferVisuals();
-    document.getElementById('receive-success').classList.remove('visible');
-    document.getElementById('transfer-error-screen').classList.remove('visible');
+    document.getElementById('receive-success')?.classList.remove('visible');
+    document.getElementById('transfer-error-screen')?.classList.remove('visible');
 
     hideCancelConfirm();
     if (typeof window.hideRxCancelConfirm === 'function') window.hideRxCancelConfirm();
@@ -3124,24 +3426,43 @@
     if (typeof resetSenderUI === 'function') resetSenderUI();
 
     const badge = document.getElementById('room-code-display');
-    const roomCodeText = badge ? badge.textContent.replace('Room ', '').trim() : '';
+    const rawBadgeText = badge ? badge.textContent.replace('Room ', '').replace('Receive', '').replace('----', '').trim() : '';
+    const safeRoomCode = rawBadgeText || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('nexus_active_room') : '') || '';
+
+    // Immediate and guaranteed DOM state recovery for unlocked room
+    document.getElementById('progress-screen')?.classList.remove('visible');
+    document.getElementById('receive-progress')?.classList.remove('visible');
+    document.body.classList.remove('transferring');
 
     if (wasReceiver) {
-      document.getElementById('gravity-well-ui').classList.remove('hidden');
+      document.getElementById('gravity-well-ui')?.classList.remove('hidden');
       const isLocked = (typeof window._socketIsLocked === 'function') ? window._socketIsLocked() : false;
       if (isLocked) {
-        if (roomCodeText && typeof window.transitionToReceiver === 'function') {
-          window.transitionToReceiver(roomCodeText);
+        if (typeof window.transitionToReceiver === 'function') {
+          window.transitionToReceiver(safeRoomCode);
         }
       } else {
-        if (roomCodeText && typeof window.transitionToSender === 'function') {
-          window.transitionToSender(roomCodeText);
+        window.__nexusCurrentScreen = 'sender';
+        if (typeof window.transitionToSender === 'function') {
+          window.transitionToSender(safeRoomCode);
         }
+        const ss = document.getElementById('sender-screen');
+        if (ss) { ss.style.display = ''; ss.classList.add('visible'); }
       }
     } else {
-      if (roomCodeText && typeof window.transitionToSender === 'function') {
-        window.transitionToSender(roomCodeText);
+      window.__nexusCurrentScreen = 'sender';
+      if (typeof window.transitionToSender === 'function') {
+        window.transitionToSender(safeRoomCode);
       }
+      const ss = document.getElementById('sender-screen');
+      if (ss) { ss.style.display = ''; ss.classList.add('visible'); }
+    }
+
+    const dz = document.getElementById('drop-zone');
+    if (dz) {
+      dz.style.display = '';
+      dz.style.opacity = '1';
+      dz.style.pointerEvents = 'all';
     }
   };
 
@@ -3156,6 +3477,7 @@
     isTransferring=false; sphereFormed=false; fileQueue=[];
     if (typeof window.onFilesSelected === 'function') window.onFilesSelected([]);
     // Exit path 3 of 7 — leave room.
+    window.__nexusCurrentScreen = 'home';
     window.resetTransferVisuals();
     document.getElementById('success-screen').classList.remove('visible');
     document.getElementById('transfer-error-screen').classList.remove('visible');
@@ -3170,6 +3492,12 @@
     document.getElementById('control-panel').classList.remove('visible');
     document.getElementById('home-screen').classList.remove('hidden');
     document.getElementById('join-error').textContent='';
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('nexus_active_room');
+      }
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } catch (_) {}
   };
   document.getElementById('btn-leave').addEventListener('click', leaveRoom);
 
@@ -3434,10 +3762,77 @@
 
   /** Called when meta frame arrives: start incoming sphere + gravity well */
   window.triggerIncomingSphere = function(filename, totalBytes, batchIndex, batchCount) {
+    if (window.__nexusScreenTransitionTimer) {
+      clearTimeout(window.__nexusScreenTransitionTimer);
+      window.__nexusScreenTransitionTimer = null;
+    }
+    window.__nexusCurrentScreen = 'receiver';
     rxMeta = { name: filename, size: totalBytes };
     // Safety reset: ensure stale rxTransferActive never blocks a valid new transfer
     rxTransferActive = false;
+
+    // Immediately banish sender screen, drop zone, and queue wrap to prevent any overlap
+    const ss = document.getElementById('sender-screen');
+    if (ss) {
+      ss.classList.remove('visible');
+      ss.style.display = 'none';
+    }
+    const dz = document.getElementById('drop-zone');
+    if (dz) {
+      dz.style.display = 'none';
+    }
+    const qw = document.getElementById('queue-wrap');
+    if (qw) {
+      qw.style.display = 'none';
+      qw.classList.remove('visible');
+    }
+
+    document.getElementById('gravity-well-ui')?.classList.add('hidden');
+    document.getElementById('receiver-screen')?.classList.remove('visible');
+    document.getElementById('transfer-error-screen')?.classList.remove('visible');
+    document.getElementById('home-screen')?.classList.add('hidden');
+
     startReceive(filename, totalBytes, batchIndex, batchCount);
+  };
+
+  /** Explicitly show receive progress overlay (used on receive drop & resume) */
+  window.showReceiverProgress = function(filename, totalBytes, batchIndex, batchCount) {
+    if (window.__nexusScreenTransitionTimer) {
+      clearTimeout(window.__nexusScreenTransitionTimer);
+      window.__nexusScreenTransitionTimer = null;
+    }
+    window.__nexusCurrentScreen = 'receiver';
+    rxTransferActive = true;
+    rxMeta = { name: filename, size: totalBytes };
+    
+    // Immediately banish sender screen, drop zone, and queue wrap to prevent any overlap
+    const ss = document.getElementById('sender-screen');
+    if (ss) {
+      ss.classList.remove('visible');
+      ss.style.display = 'none';
+    }
+    const dz = document.getElementById('drop-zone');
+    if (dz) {
+      dz.style.display = 'none';
+    }
+    const qw = document.getElementById('queue-wrap');
+    if (qw) {
+      qw.style.display = 'none';
+      qw.classList.remove('visible');
+    }
+
+    document.getElementById('gravity-well-ui')?.classList.add('hidden');
+    document.getElementById('receiver-screen')?.classList.remove('visible');
+    document.getElementById('transfer-error-screen')?.classList.remove('visible');
+    document.getElementById('home-screen')?.classList.add('hidden');
+
+    const rxCancelBtn = document.getElementById('btn-rx-cancel');
+    if (rxCancelBtn) rxCancelBtn.style.display = '';
+    const rxCancelConf = document.getElementById('rx-cancel-confirm');
+    if (rxCancelConf) rxCancelConf.classList.remove('visible');
+
+    showReceiveProgress(filename, totalBytes, batchIndex, batchCount);
+    window.enterTransferVisuals('in');
   };
 
   /** Called each chunk: update progress ring with real values */
@@ -3510,6 +3905,7 @@
     rxTransferActive = false; rxProgress = 0; rxSpeed = 0;
 
     // Exit path 6 of 7 — leave receiver.
+    window.__nexusCurrentScreen = 'home';
     window.resetTransferVisuals();
 
     // Clear all receiver UI
@@ -3530,6 +3926,12 @@
     document.getElementById('top-bar-sender-right').style.display = 'none';
     document.getElementById('card-bloom').style.display = '';
     document.getElementById('home-screen').classList.remove('hidden');
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('nexus_active_room');
+      }
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } catch (_) {}
     // Ch7: emit leave-room
     if (window._socketLeaveRoom) window._socketLeaveRoom();
   };
@@ -3682,10 +4084,10 @@
 
   /* ── PUBLIC API ── */
   window.Toast = {
-    show(message, type = 'info') {
+    show(message, type = 'info', duration = TOAST_DURATION, options = {}) {
       // Deduplication: don't show identical message within 1s
       const last = activeToasts[activeToasts.length - 1];
-      if (last && last.dataset.msg === message && (Date.now() - (last._born || 0)) < 1000) return;
+      if (last && last.dataset.msg === message && (Date.now() - (last._born || 0)) < 1000) return last;
 
       // Overflow: evict oldest if at max
       if (activeToasts.length >= MAX_TOASTS) {
@@ -3696,18 +4098,38 @@
       toast.className = `toast ${type}`;
       toast.dataset.msg = message;
       toast._born = Date.now();
-      // Use escapeHTML to prevent XSS from peer-supplied filenames embedded in toast messages
-      const safeMsg = message.replace(/[&<>'"/]/g, function(m) {
-        return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;','/':'&#x2F;'}[m]);
-      });
+
+      const escape = function(str) {
+        return String(str || '').replace(/[&<>'"]/g, function(m) {
+          return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]);
+        });
+      };
+
+      const safeMsg = escape(message);
+      let actionHtml = '';
+      if (options && options.actionText) {
+        actionHtml = `<button class="toast-action-btn">${escape(options.actionText)}</button>`;
+      }
+
       toast.innerHTML = `
         <div class="toast-icon">${ICONS[type] || 'ℹ'}</div>
         <div class="toast-body">
           <div class="toast-msg">${safeMsg}</div>
+          ${actionHtml}
         </div>
         <button class="toast-close" aria-label="Dismiss">×</button>
         <div class="toast-progress"><div class="toast-progress-bar" style="width:100%"></div></div>
       `;
+
+      if (options && options.actionText && typeof options.onAction === 'function') {
+        const btn = toast.querySelector('.toast-action-btn');
+        if (btn) {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            try { options.onAction(toast); } catch (_) {}
+          });
+        }
+      }
 
       container.appendChild(toast);
       activeToasts.push(toast);
@@ -3715,18 +4137,84 @@
       // Close button
       toast.querySelector('.toast-close').addEventListener('click', () => dismissToast(toast));
 
-      // Animate progress bar
-      const bar = toast.querySelector('.toast-progress-bar');
-      // Force reflow then start shrink transition
-      requestAnimationFrame(() => {
-        bar.style.transition = `width ${TOAST_DURATION}ms linear`;
-        bar.style.width = '0%';
-      });
+      // Progress bar animation & auto-dismiss
+      const progEl = toast.querySelector('.toast-progress');
+      if (typeof duration === 'number' && duration > 0 && duration !== Infinity) {
+        const bar = toast.querySelector('.toast-progress-bar');
+        if (bar) {
+          requestAnimationFrame(() => {
+            bar.style.transition = `width ${duration}ms linear`;
+            bar.style.width = '0%';
+          });
+        }
+        toast._timer = setTimeout(() => dismissToast(toast), duration);
+      } else if (progEl) {
+        progEl.style.display = 'none';
+      }
 
-      // Auto-dismiss
-      toast._timer = setTimeout(() => dismissToast(toast), TOAST_DURATION);
+      // Dynamic in-place updater (prevents UI flicker)
+      toast.updateMsg = function(newMsg, newType, newOptions) {
+        toast.dataset.msg = newMsg;
+        const msgEl = toast.querySelector('.toast-msg');
+        if (msgEl) {
+          msgEl.innerHTML = escape(newMsg);
+        }
+        if (newType) {
+          toast.className = `toast ${newType}`;
+          const iconEl = toast.querySelector('.toast-icon');
+          if (iconEl) iconEl.textContent = ICONS[newType] || 'ℹ';
+        }
+        let btn = toast.querySelector('.toast-action-btn');
+        if (newOptions && newOptions.actionText && typeof newOptions.onAction === 'function') {
+          if (!btn) {
+            btn = document.createElement('button');
+            btn.className = 'toast-action-btn';
+            toast.querySelector('.toast-body').appendChild(btn);
+          }
+          btn.textContent = newOptions.actionText;
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            try { newOptions.onAction(toast); } catch (_) {}
+          };
+        } else if (btn && newOptions && newOptions.actionText === null) {
+          btn.remove();
+        }
+      };
+
+      // Transition smoothly to success state with progress bar
+      toast.transitionToSuccess = function(successMsg, successDuration = 3500) {
+        toast.updateMsg(successMsg || '🟢 Connected to Signaling Network! Ready to share.', 'success', { actionText: null });
+        if (toast._timer) clearTimeout(toast._timer);
+        if (progEl) {
+          progEl.style.display = 'block';
+          const bar = toast.querySelector('.toast-progress-bar');
+          if (bar) {
+            bar.style.transition = 'none';
+            bar.style.width = '100%';
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                bar.style.transition = `width ${successDuration}ms linear`;
+                bar.style.width = '0%';
+              });
+            });
+          }
+        }
+        toast._timer = setTimeout(() => dismissToast(toast), successDuration);
+      };
+
+      toast.dismiss = function() {
+        dismissToast(toast);
+      };
 
       return toast;
+    },
+    dismiss(toast) {
+      if (toast) dismissToast(toast);
+    },
+    dismissAll() {
+      while (activeToasts.length > 0) {
+        dismissToast(activeToasts[0]);
+      }
     }
   };
 
@@ -3781,17 +4269,28 @@
      PEER DISCONNECT (mid-transfer variant)
   ───────────────────────────────────────────── */
   window.showPeerDisconnected = function(midTransfer) {
-    // Idempotent, so covering both branches costs nothing and guarantees the
-    // rings stop even if the peer drops outside an active transfer.
-    window.resetTransferVisuals();
     if (midTransfer) {
-      showTransferError(
-        'Peer disconnected.',
-        'Transfer is incomplete. The file may be corrupted on the receiver.',
-        null
-      );
+      if (window.TransferRings) window.TransferRings.stop();
+      const trCanvas = document.getElementById('transfer-rings-canvas');
+      if (trCanvas) trCanvas.style.display = 'none';
+      // Non-destructive: keep in-flight progress screen intact and show pause status
+      Toast.show('Peer disconnected. Waiting to resume transfer...', 'warning');
+      const psStats = document.getElementById('progress-stats');
+      if (psStats) psStats.textContent = 'Connection paused · Reconnecting…';
+      const rxStats = document.getElementById('receive-stats');
+      if (rxStats) rxStats.textContent = 'Connection paused · Reconnecting…';
     } else {
-      Toast.show('Peer disconnected.', 'warning');
+      window.resetTransferVisuals();
+      // KTD6: a peer leave with no transfer in flight must release the receiver
+      // latch. resetTransferVisuals() hides the receive-progress overlay but
+      // leaves rxTransferActive true, so a later transitionToReceiver (from the
+      // room-status:waiting handler) refuses to reveal the receiver-screen —
+      // the receiver is left on a blank state. Clearing the latch lets the
+      // receiver workspace render again ("stays on its current screen", R8/SC4).
+      if (typeof window.stopReceiverAnimation === 'function') {
+        window.stopReceiverAnimation();
+      }
+      Toast.show('Peer disconnected. Waiting for peer...', 'warning');
     }
   };
 
@@ -4007,8 +4506,8 @@
     /** Peer left (idle or mid-transfer handled by caller) */
     onPeerLeft(midTransfer) {
       peerConnected = false;
-      webrtcOpen    = false;
-      dotWebRTC.classList.remove('green');
+      const elWeb = document.getElementById('dot-webrtc') || dotWebRTC;
+      if (elWeb) elWeb.classList.remove('green');
       updateStatusPill();
 
       const centerBar = document.getElementById('top-bar-center');

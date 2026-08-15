@@ -15,10 +15,13 @@ declare global {
     };
     transitionToSender?: (code: string) => void;
     transitionToReceiver?: (code: string) => void;
+    __nexusCurrentScreen?: 'home' | 'sender' | 'receiver';
     resetSenderUI?: () => void;
     _ch8CleanUp?: () => void;
     updateGrabButtonState?: (hasFiles: boolean, isGlobalLocked: boolean, isSource: boolean) => void;
-    updateDropButtonState?: (hasIncomingFile: boolean, isGlobalLocked: boolean, isSource: boolean, isGrabbedPermanent: boolean) => void;
+    showSenderProgress?: (file?: File, batchIndex?: number, batchCount?: number) => void;
+    showReceiverProgress?: (filename: string, totalBytes: number, batchIndex?: number, batchCount?: number) => void;
+    updateSenderProgress?: (progress: number, speedMbps: number, batchIndex?: number, batchCount?: number) => void;
     updateReceiverProgress?: (progress: number, speedMbps: number) => void;
     setTransferPhase?: (phase: 'idle' | 'requested' | 'active' | 'stalled') => void;
     getTransferPhase?: () => 'idle' | 'requested' | 'active' | 'stalled';
@@ -33,7 +36,14 @@ declare global {
     _completeTransferCh3?: () => void;
     _socketLeaveRoom?: () => void;
     _socketCancelTransfer?: () => void;
-    onFileReceivedSuccess?: (fileObj: { name: string; size: number; url: string | null }) => void;
+    Toast?: {
+      show: (message: string, type?: 'info' | 'success' | 'warning' | 'error', duration?: number, options?: { actionText?: string; onAction?: (toast: any) => void }) => any;
+      dismiss?: (toast: any) => void;
+      dismissAll?: () => void;
+    };
+    retrySignaling?: () => void;
+    __SERVER_LOCAL_IP__?: string;
+    updateQR?: () => void;
     ParticleSystem?: {
       startTransfer?: (progressGetter: () => number, speedGetter: () => number) => void;
     };
