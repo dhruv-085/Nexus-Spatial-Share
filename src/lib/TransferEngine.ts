@@ -313,7 +313,13 @@ export class TransferEngine {
     this.rttProbeStartTimes.clear();
 
     this.startTime = performance.now();
-    this.bytesTransferred = resumeManifest.length * CHUNK_SIZE;
+    const totalSize = this.file ? this.file.size : (this.fileMeta?.size ?? 0);
+    const resumeAckedBytes = resumeManifest.reduce((sum, idx) => {
+      const isLastChunk = (idx === this.totalChunks - 1);
+      const chunkSize = isLastChunk && totalSize > 0 ? (totalSize - idx * CHUNK_SIZE) : CHUNK_SIZE;
+      return sum + Math.max(0, chunkSize);
+    }, 0);
+    this.bytesTransferred = Math.min(totalSize, Math.max(0, resumeAckedBytes));
 
     this.startTelemetry();
 
@@ -419,7 +425,13 @@ export class TransferEngine {
     this.backpressurePausedSince = 0;
 
     // U3 (AE1): never let the progress ring jump backwards after a resume.
-    this.bytesTransferred = Math.max(this.bytesTransferred, this.ackedChunks.size * CHUNK_SIZE);
+    const totalSize = this.file ? this.file.size : (this.fileMeta?.size ?? 0);
+    const ackedBytes = Array.from(this.ackedChunks).reduce((sum, idx) => {
+      const isLastChunk = (idx === this.totalChunks - 1);
+      const chunkSize = isLastChunk && totalSize > 0 ? (totalSize - idx * CHUNK_SIZE) : CHUNK_SIZE;
+      return sum + Math.max(0, chunkSize);
+    }, 0);
+    this.bytesTransferred = Math.min(totalSize, Math.max(this.bytesTransferred, ackedBytes));
 
     // Refresh the ACK clock so the stale-backpressure / inFlight-deadlock
     // watchdog paths do not fire on the first tick after a resume.
@@ -941,7 +953,8 @@ export class TransferEngine {
 
     this.receiveChunksArray[index] = cleanBuffer;
     this.receivedChunks.add(index);
-    this.bytesTransferred += originalLength;
+    const totalSize = this.fileMeta?.size ?? 0;
+    this.bytesTransferred = Math.min(totalSize, this.bytesTransferred + originalLength);
 
     // ACK BEFORE disk I/O: decouples disk write latency from the ACK path.
     // On hotspot/LAN the sender fills its inFlight window in milliseconds.
@@ -1119,7 +1132,7 @@ export class TransferEngine {
       const totalSize = this.file
         ? this.file.size
         : (this.fileMeta?.size ?? 0);
-      const etaSeconds = speedBps > 0 ? (totalSize - this.bytesTransferred) / speedBps : 0;
+      const etaSeconds = speedBps > 0 ? Math.max(0, (totalSize - this.bytesTransferred) / speedBps) : 0;
 
       const totalChunks = this.file
         ? this.totalChunks
@@ -1128,7 +1141,7 @@ export class TransferEngine {
         ? this.ackedChunks.size
         : this.receivedChunks.size;
       const progress = totalChunks > 0
-        ? Math.round((chunksDone / totalChunks) * 100)
+        ? Math.min(100, Math.max(0, Math.round((chunksDone / totalChunks) * 100)))
         : 0;
 
       this.onTelemetryUpdate({

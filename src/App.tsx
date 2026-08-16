@@ -2291,16 +2291,17 @@ export default function App() {
   }, [selectedFiles, isGlobalLocked, isSource, incomingFile, isGrabbedPermanent]);
 
   useEffect(() => {
+    const safeRatio = Math.min(1, Math.max(0, (Number(transferProgress) || 0) / 100));
     if (isTransferring && isSource) {
       (window as any).updateSenderProgress?.(
-        transferProgress / 100,
+        safeRatio,
         telemetry?.speedMBps ?? 0,
         currentFileIndex,
         selectedFiles.length
       );
     }
     if (isTransferring && !isSource) {
-        (window as any).updateReceiverProgress?.(transferProgress / 100, telemetry?.speedMBps ?? 0);
+      (window as any).updateReceiverProgress?.(safeRatio, telemetry?.speedMBps ?? 0);
     }
   }, [isTransferring, isSource, transferProgress, telemetry, currentFileIndex, selectedFiles]);
 

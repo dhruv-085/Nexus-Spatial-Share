@@ -890,4 +890,35 @@ This file documents all bugs fixed in this project. **All future agent sessions 
      - `npm run build`: built cleanly with 0 errors.
 * **Files modified**: [`server.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/server.ts), [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`code_debugged.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/code_debugged.md)
 
+---
+
+## 63. Transfer Completion Lifecycle, Sender Blank Screen & Receiver Loop Trapping
+* **Symptom**:
+  1. On the sender device, after a transfer completed and the 6-second success modal was dismissed (or "Send Another File" clicked), the screen became completely blank without restoring the interactive drag-and-drop workspace (`#drop-zone`).
+  2. On the receiver device, after file assembly completed and the success modal dismissed on an unlocked room, the receiver was re-locked into the receiving loop screen (`#receiver-screen` with `#gravity-well-ui` radar animation) instead of cleanly returning to the sender drop-zone workspace.
+* **Root Cause**:
+  1. `resetSenderUI()` and `sendAnotherFile()` in `index.html` removed `#success-screen.visible` but never explicitly cleared inline `style.display = 'none'` or re-added `.visible` to `#sender-screen`, causing CSS rule `#sender-screen:not(.visible) { display: none !important; }` to keep `#sender-screen` hidden.
+  2. `dismissSuccess()` in `index.html` called `transitionToSender(roomCodeText)`, but `transitionToSender()` contained an unconditional check `if (window.__nexusCurrentScreen === 'receiver')` which delegated back to `transitionToReceiver()`, trapping the receiver in the receiver screen loop.
+* **Fix**:
+  1. **Sender UI Restoration**: Updated `sendAnotherFile()` and `resetSenderUI()` in [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html) to set `window.__nexusCurrentScreen = 'sender'`, enforce `#sender-screen.classList.add('visible')` with `style.display = ''`, and restore `#drop-zone.style.display = ''`, `opacity = '1'`, and `pointerEvents = 'all'`.
+  2. **Receiver Workspace Release**: In [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html) (`dismissSuccess()`), when the room is unlocked (`!isLocked`), reset `window.__nexusCurrentScreen = 'sender'`, hide `#gravity-well-ui`, and transition cleanly to `transitionToSender(roomCodeText)`.
+  3. **Transition Receiver Guard Refinement**: Refined `isRxActiveNow` in `transitionToSender()` so it only intercepts when an active receive transfer is in flight or room is locked.
+* **Files modified**: [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`test_completion_screen_restoration.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_completion_screen_restoration.cjs)
+
+---
+
+## 64. Small-File 1333% Progress Overshoot & Decoupled Vite HMR Auto-Reload
+* **Symptom**:
+  1. Transferring small files (e.g. 9.8 KB) initially displayed `1333%` progress on both sender and receiver progress rings/percentages.
+  2. During network interface switches or dev reconnection, Vite's client WebSocket disconnected and triggered `window.location.reload()`, interrupting the session.
+* **Root Cause**:
+  1. In `src/lib/TransferEngine.ts`, `this.bytesTransferred = Math.max(this.bytesTransferred, this.ackedChunks.size * CHUNK_SIZE)` assumed all chunks were full 128 KB chunks. On a 9.8 KB file with 1 chunk, `1 * 131072 = 131072` bytes, leading to `(131072 / 9830) * 100 = 1333.38%`.
+  2. In `server.ts`, Vite dev server attached `{ server: httpServer }` to HMR unconditionally unless `DISABLE_HMR=true` was provided.
+* **Fix**:
+  1. **Exact Chunk Byte Calculation & Clamping**: Updated `resumeTransfer`, `handleAck`, and `handleIncomingChunk` in [`src/lib/TransferEngine.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/lib/TransferEngine.ts) to calculate partial byte sizes for the last chunk and clamp `bytesTransferred` to `totalSize`. Clamped telemetry `progress` to `[0, 100]`.
+  2. **UI Clamping Safeguard**: Clamped `safeRatio = Math.min(1, Math.max(0, transferProgress / 100))` in [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx) and clamped progress in `updateSenderProgress` / `updateReceiverProgress` in [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html).
+  3. **Vite HMR Decoupled**: Updated `server.ts` so `hmr: process.env.ENABLE_HMR === 'true' ? { server: httpServer } : false`, preventing dev server HMR client disconnects from reloading the browser.
+* **Files modified**: [`src/lib/TransferEngine.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/lib/TransferEngine.ts), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`server.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/server.ts), [`test_small_file_progress.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_small_file_progress.cjs), [`test_silent_reconnect_no_reload.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_silent_reconnect_no_reload.cjs)
+
+
 

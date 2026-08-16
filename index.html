@@ -3090,10 +3090,10 @@
       code = '';
     }
     // If receiver screen is active or an active receive transfer or receive modal is in flight, do not flip screen identity or UI to sender workspace
-    const isRxActiveNow = (window.__nexusCurrentScreen === 'receiver') ||
+    const isLocked = (typeof window._socketIsLocked === 'function' && window._socketIsLocked());
+    const isRxActiveNow = (isLocked && window.__nexusCurrentScreen === 'receiver') ||
                           (typeof window.getRxTransferActive === 'function' && window.getRxTransferActive()) ||
-                          document.getElementById('receive-progress')?.classList.contains('visible') ||
-                          document.getElementById('receive-success')?.classList.contains('visible');
+                          document.getElementById('receive-progress')?.classList.contains('visible');
     if (isRxActiveNow) {
       if (typeof window.transitionToReceiver === 'function') {
         window.transitionToReceiver(code);
@@ -3106,10 +3106,9 @@
     // transfer state changed, do not re-run the work or re-arm the shared
     // last-wins transition timer (a reconnect burst would churn it).
     const senderScreen = document.getElementById('sender-screen');
-    const isLocked = (typeof window._socketIsLocked === 'function' && window._socketIsLocked());
     const isTxActive = isTransferring || (typeof window.getTransferPhase === 'function' && window.getTransferPhase() !== 'idle') || document.getElementById('progress-screen')?.classList.contains('visible');
     const isRxActive = (typeof window.getRxTransferActive === 'function' && window.getRxTransferActive()) || (isLocked && window.__nexusCurrentScreen === 'receiver') || document.getElementById('receive-progress')?.classList.contains('visible') || document.getElementById('receive-success')?.classList.contains('visible');
-    if (senderScreen.classList.contains('visible') && !isTxActive && !isRxActive) {
+    if (senderScreen && senderScreen.classList.contains('visible') && !isTxActive && !isRxActive) {
       return;
     }
     document.getElementById('logo-home').style.display = 'none';
@@ -3306,12 +3305,13 @@
 
   /* ── SENDER PROGRESS HOOK ── */
   window.updateSenderProgress = function(progress, speedMbps, batchIndex, batchCount) {
+    const safeProgress = Math.min(1, Math.max(0, Number(progress) || 0));
     const circumference = 502;
-    const offset = circumference * (1 - progress);
+    const offset = circumference * (1 - safeProgress);
     const ringEl = document.getElementById('progress-ring');
     if (ringEl) ringEl.style.strokeDashoffset = offset;
     const pctEl = document.getElementById('progress-pct');
-    if (pctEl) pctEl.textContent = Math.floor(progress * 100);
+    if (pctEl) pctEl.textContent = Math.floor(safeProgress * 100);
 
     const idx = (typeof batchIndex === 'number') ? batchIndex : 0;
     const count = (typeof batchCount === 'number') ? batchCount : fileQueue.length;
@@ -3334,7 +3334,7 @@
 
     const activeFile = (fileQueue && fileQueue[idx]) ? fileQueue[idx] : (fileQueue && fileQueue[0] ? fileQueue[0] : null);
     const fileBytes = activeFile ? activeFile.size : (fileQueue.reduce((s,f)=>s+(f.size||0),0) || (80*1048576));
-    const remaining = fileBytes * (1 - progress);
+    const remaining = fileBytes * (1 - safeProgress);
     const etaSec = speedMbps > 0 ? remaining / (speedMbps * 1048576) : 0;
     const etaStr = speedMbps > 0 ? (etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's') : '—';
     const statsEl = document.getElementById('progress-stats');
@@ -3468,7 +3468,19 @@
 
   /* ── SUCCESS ACTIONS ── */
   window.sendAnotherFile=function(){
-    document.getElementById('success-screen').classList.remove('visible');
+    document.getElementById('success-screen')?.classList.remove('visible');
+    window.__nexusCurrentScreen = 'sender';
+    const ss = document.getElementById('sender-screen');
+    if (ss) {
+      ss.style.display = '';
+      ss.classList.add('visible');
+    }
+    const dz = document.getElementById('drop-zone');
+    if (dz) {
+      dz.style.display = '';
+      dz.style.opacity = '1';
+      dz.style.pointerEvents = 'all';
+    }
     fileQueue=[]; resetSenderUI();
     if (typeof window.onFilesSelected === 'function') window.onFilesSelected([]);
   };
@@ -3515,7 +3527,17 @@
     // threw a TypeError partway through and silently abandoned the rest of this
     // reset — and with it the tail of onTransferCancelled, which calls this.
     const dz=document.getElementById('drop-zone');
-    if (dz) { dz.style.padding=''; dz.style.display=''; }
+    if (dz) {
+      dz.style.padding='';
+      dz.style.display='';
+      dz.style.opacity='1';
+      dz.style.pointerEvents='all';
+    }
+    const ss = document.getElementById('sender-screen');
+    if (ss && window.__nexusCurrentScreen === 'sender') {
+      ss.style.display = '';
+      ss.classList.add('visible');
+    }
     const qw=document.getElementById('queue-wrap');
     if (qw) qw.classList.remove('visible');
     document.getElementById('control-panel')?.classList.remove('visible');
@@ -3724,15 +3746,19 @@
   }
 
   function dismissSuccess() {
-    document.getElementById('receive-success').classList.remove('visible');
-    document.getElementById('gravity-well-ui').classList.remove('hidden');
+    document.getElementById('receive-success')?.classList.remove('visible');
     // Return to sender/idle workspace if room is unlocked
     const isLocked = (typeof window._socketIsLocked === 'function') ? window._socketIsLocked() : false;
     if (!isLocked) {
-      const roomCodeText = document.getElementById('room-code-display').textContent.replace('Room ', '').trim();
+      window.__nexusCurrentScreen = 'sender';
+      document.getElementById('gravity-well-ui')?.classList.add('hidden');
+      document.getElementById('receiver-screen')?.classList.remove('visible');
+      const roomCodeText = document.getElementById('room-code-display')?.textContent.replace('Room ', '').trim() || '';
       if (roomCodeText && typeof window.transitionToSender === 'function') {
         window.transitionToSender(roomCodeText);
       }
+    } else {
+      document.getElementById('gravity-well-ui')?.classList.remove('hidden');
     }
   }
 
@@ -3837,16 +3863,21 @@
 
   /** Called each chunk: update progress ring with real values */
   window.updateReceiverProgress = function(progress, speedMbps) {
+    const safeProgress = Math.min(1, Math.max(0, Number(progress) || 0));
     const circumference = 502;
-    document.getElementById('receive-ring').style.strokeDashoffset =
-      circumference * (1 - progress);
-    document.getElementById('receive-pct').textContent = Math.floor(progress * 100);
+    const ringEl = document.getElementById('receive-ring');
+    if (ringEl) ringEl.style.strokeDashoffset = circumference * (1 - safeProgress);
+    const pctEl = document.getElementById('receive-pct');
+    if (pctEl) pctEl.textContent = Math.floor(safeProgress * 100);
     if (rxMeta) {
-      const remaining = rxMeta.size * (1 - progress);
+      const remaining = rxMeta.size * (1 - safeProgress);
       const etaSec = speedMbps > 0 ? remaining / (speedMbps * 1048576) : 0;
       const etaStr = speedMbps > 0 ? (etaSec < 2 ? '<1s' : '~' + Math.ceil(etaSec) + 's') : '—';
-      document.getElementById('receive-stats').textContent =
-        (speedMbps || 0).toFixed(1) + ' MB/s · ' + etaStr + (speedMbps > 0 ? ' remaining' : '');
+      const statsEl = document.getElementById('receive-stats');
+      if (statsEl) {
+        statsEl.textContent =
+          (speedMbps || 0).toFixed(1) + ' MB/s · ' + etaStr + (speedMbps > 0 ? ' remaining' : '');
+      }
     }
   };
 
