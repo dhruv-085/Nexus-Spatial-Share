@@ -1943,7 +1943,7 @@
     <div id="cancel-area">
       <button class="btn-cancel" id="btn-cancel" onclick="showCancelConfirm()">Cancel Transfer</button>
       <div id="cancel-confirm">
-        <div class="cancel-confirm-text">Cancel transfer? The file will be incomplete on the receiver.</div>
+        <div class="cancel-confirm-text">Cancel transfer? The file transfer will stop immediately.</div>
         <div class="cancel-confirm-btns">
           <button class="btn-confirm-yes" onclick="cancelTransfer()">Yes, Cancel</button>
           <button class="btn-confirm-no" onclick="hideCancelConfirm()">No, Continue</button>
@@ -2007,8 +2007,8 @@
       </svg>
       <span>Compatibility Guard</span>
     </div>
-    <h2 class="unsupported-title">System Architecture Incompatible</h2>
-    <p class="unsupported-text">Nexus Spatial Share requires modern WebRTC P2P Data Channels, Cryptography primitives, and hardware-accelerated Canvas to establish spatial transfers.</p>
+    <h2 class="unsupported-title">Browser Environment Incompatible</h2>
+    <p class="unsupported-text">Nebulo Share requires modern WebRTC P2P Data Channels, Cryptography primitives, and hardware-accelerated Canvas for direct peer-to-peer transfers.</p>
     <div class="unsupported-reasons" id="unsupported-reasons"></div>
     <div class="browser-links">
       <div class="browser-rec">Recommended Browsers:</div>
@@ -2028,7 +2028,7 @@
   <div class="lfm-card">
     <span class="lfm-icon">⚠️</span>
     <div class="lfm-title">Large file detected</div>
-    <div class="lfm-body" id="lfm-body">This file is large. Transfer may take longer on slow connections.</div>
+    <div class="lfm-body" id="lfm-body">Large file detected. Direct peer transfer speed depends on your local network throughput.</div>
     <div class="lfm-btns">
       <button class="btn-lfm-send" id="btn-lfm-send">Send Anyway</button>
       <button class="btn-lfm-cancel" id="btn-lfm-cancel">Cancel</button>
@@ -2056,7 +2056,7 @@
 <!-- RECEIVE PROGRESS (incoming transfer) -->
 <div id="receive-progress">
   <div class="progress-top-region">
-    <div class="receive-label">Receiving...</div>
+    <div class="receive-label">Receiving incoming files...</div>
   </div>
   <div class="progress-ring-wrap">
     <svg width="180" height="180" viewBox="0 0 180 180">
@@ -2082,7 +2082,7 @@
     <div id="rx-cancel-area">
       <button class="btn-cancel" id="btn-rx-cancel" onclick="showRxCancelConfirm()">Cancel Transfer</button>
       <div id="rx-cancel-confirm">
-        <div class="cancel-confirm-text">Cancel transfer? The file will be incomplete.</div>
+        <div class="cancel-confirm-text">Cancel transfer? The incoming transfer will stop immediately.</div>
         <div class="cancel-confirm-btns">
           <button class="btn-confirm-yes" onclick="cancelTransfer()">Yes, Cancel</button>
           <button class="btn-confirm-no" onclick="hideRxCancelConfirm()">No, Continue</button>
@@ -2100,7 +2100,7 @@
       <path d="M3 17v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/>
     </svg>
   </div>
-  <div class="receive-success-title">File received.</div>
+  <div class="receive-success-title">Files received.</div>
   <div class="receive-success-file" id="receive-success-filename"></div>
   <button class="btn-download-main" id="btn-download-main">Download File</button>
   <div class="receive-success-sub-btns">

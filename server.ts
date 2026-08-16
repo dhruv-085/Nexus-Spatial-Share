@@ -60,7 +60,7 @@ function renderErrorHtml(code: number, title: string, description: string): stri
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>${code} · Nexus Spatial</title>
+  <title>${code} · Nebulo Share</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -185,9 +185,9 @@ function renderErrorHtml(code: number, title: string, description: string): stri
     <p class="desc">${description}</p>
     <a href="/" class="btn">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      Return to Nexus Command
+      Return to Nebulo Share
     </a>
-    <div class="footer-brand">Nexus Spatial Share Security Architecture</div>
+    <div class="footer-brand">Nebulo Share Security Architecture</div>
   </div>
 </body>
 </html>`;
@@ -804,7 +804,7 @@ async function startServer() {
           html = html.replace('<head>', '<head>' + preamble);
         }
         if (!html.includes('__SERVER_LOCAL_IP__')) {
-          html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + ipScript);
+          html = html.replace('<title>Nebulo Share</title>', '<title>Nebulo Share</title>' + ipScript);
         }
         res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
       } catch (e) {
@@ -823,11 +823,11 @@ async function startServer() {
         const localIP = getLocalIPAddress();
         const ipScript = `\n<script>window.__SERVER_LOCAL_IP__ = "${localIP}";</script>`;
         if (!html.includes('__SERVER_LOCAL_IP__')) {
-          html = html.replace('<title>Nexus Spatial</title>', '<title>Nexus Spatial</title>' + ipScript);
+          html = html.replace('<title>Nebulo Share</title>', '<title>Nebulo Share</title>' + ipScript);
         }
         res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
       } else {
-        res.status(404).send(renderErrorHtml(404, '404 · Sector Orbit Lost', 'The requested nexus asset or sector was not found on this deployment.'));
+        res.status(404).send(renderErrorHtml(404, '404 · Page Not Found', 'The requested Nebulo Share asset or route was not found on this deployment.'));
       }
     });
   }
@@ -841,7 +841,7 @@ async function startServer() {
     if (req.path.startsWith('/api/')) {
       return res.status(500).json({ error: "Internal Server Error", status: 500 });
     }
-    res.status(500).send(renderErrorHtml(500, '500 · Core Subsystem Error', 'An unexpected system anomaly occurred within the spatial network bridge.'));
+    res.status(500).send(renderErrorHtml(500, '500 · Server Subsystem Error', 'An unexpected system anomaly occurred within the peer network bridge.'));
   });
 
   httpServer.on("error", (err: any) => {
@@ -859,7 +859,7 @@ async function startServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     const protocol = isHttps ? "https" : "http";
     const localIP = getLocalIPAddress();
-    console.log(`Nexus Server running on ${protocol}://localhost:${PORT}`);
+    console.log(`Nebulo Share Server running on ${protocol}://localhost:${PORT}`);
     console.log(`To access on your phone, go to: ${protocol}://${localIP}:${PORT}`);
   });
 }
