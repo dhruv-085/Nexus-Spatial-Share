@@ -919,6 +919,245 @@ This file documents all bugs fixed in this project. **All future agent sessions 
   2. **UI Clamping Safeguard**: Clamped `safeRatio = Math.min(1, Math.max(0, transferProgress / 100))` in [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx) and clamped progress in `updateSenderProgress` / `updateReceiverProgress` in [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html).
   3. **Vite HMR Decoupled**: Updated `server.ts` so `hmr: process.env.ENABLE_HMR === 'true' ? { server: httpServer } : false`, preventing dev server HMR client disconnects from reloading the browser.
 * **Files modified**: [`src/lib/TransferEngine.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/lib/TransferEngine.ts), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`server.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/server.ts), [`test_small_file_progress.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_small_file_progress.cjs), [`test_silent_reconnect_no_reload.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_silent_reconnect_no_reload.cjs)
+---
+
+## 65. ETA Progress Ring Vertical Centering & Post-Transfer File Queue UI Display
+* **Symptom**:
+  1. During active file transfer on sender (`#progress-screen`) and receiver (`#receive-progress`), the progress ring with ETA/speed readout was rendered noticeably below the vertical center of the viewport, creating a 14px–34px visual offset against the 3D particle sphere / canvas animation centered at `CY = innerHeight / 2`.
+  2. After a file transfer completed and the success modal was dismissed (or "Send Another File" clicked), selecting new files added them to the queue and enabled the Send button, but the selected files queue card (`#queue-wrap`) below `#drop-zone` remained invisible.
+* **Root Cause**:
+  1. `#progress-screen` and `#receive-progress` had asymmetrical padding (`padding: calc(64px + env(safe-area-inset-top, 0px)) 24px 36px`), and `.progress-top-region` / `.progress-bottom-region` had different intrinsic padding heights ($84\text{px}$ top vs $56\text{px}$ bottom), shifting `.progress-ring-wrap` downward by $\Delta Y = (84-56)/2 = +14\text{px}$ (and more on mobile).
+  2. Screen transition hooks (`transitionToReceiver`, `triggerIncomingSphere`, `showReceiverProgress`) applied inline `style.display = 'none'` to `#queue-wrap`. When returning to the sender screen, `renderQueue()`, `resetSenderUI()`, and `sendAnotherFile()` added `.visible` (`display: block`) but did not clear the inline `style.display = 'none'`, leaving `#queue-wrap` hidden.
+* **Fix**:
+  1. **Symmetric Vertical Centering**:
+     - Updated `#progress-screen` and `#receive-progress` to `padding: 0 24px;` (and `0 16px` on mobile).
+     - Set `.progress-top-region, .progress-bottom-region { flex: 1 1 0; min-height: 0; box-sizing: border-box; }`.
+     - Gave `.progress-top-region` symmetric `padding: 0 0 20px 0;` and `.progress-bottom-region` `padding: 20px 0 0 0; gap: 16px;`.
+     - Verified exact mathematical centering where bounding rect center $Y = \text{innerHeight} / 2$ ($\pm 0.00\text{px}$ delta across Desktop, Mobile, and Tablet viewports).
+  2. **Queue Wrap Display Cleansing**:
+   1. `initURLRoomJoin()` in `index.html` treated any `?room=XXXX` URL without `auto=1` or `pendingRestore` as a "stale" room, executing `else if (urlRoom && /^\d{4}$/.test(urlRoom))` which removed `nexus_active_room` from `sessionStorage` and stripped `?room=` from the URL on any tab restore/reload while actively inside a room.
+   2. `roomCode` state in `src/App.tsx` only initialized if `autoJoin === '1'`, returning `""` on standard tab reloads even when `sessionStorage` or the active URL preserved the room session.
+   3. `handleVisibilityChange` in `src/App.tsx` guarded resume hooks with `if (isTransferringRef.current)`. However, `resetWebRTCConnection(true)` or `dc.onclose` resets `isTransferringRef` to `false` while preserving transfer intent (`transferRequestedRef`, `preservedResumeManifestRef`, `transferIdRef`), preventing visibility foreground return from re-asserting progress overlays and triggering immediate resume handshakes.
+* **Fix**:
+   1. **Active Room Session & Tab Restore Retention**: Updated `initURLRoomJoin()` in [index.html](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html) and `roomCode` initial state in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx) to check `storedRoom === urlRoom` in addition to `autoJoin === '1'` and `pendingRestore`. A mobile tab restore/reload while in an active room session preserves the room and auto-rejoins seamlessly without ejecting the user.
+   2. **Transfer Intent Foreground Resume**: Updated `handleVisibilityChange` in [src/App.tsx](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx) to check `hasActiveTransferIntent` (`isTransferringRef.current || (isGlobalLockedRef.current && (transferRequestedRef.current || preservedResumeManifestRef.current !== null || (isSourceRef.current && !!transferIdRef.current)))`), re-asserting progress overlays and firing resume handshakes (`START_TRANSFER` or `RESUME_REQUEST`) upon returning to foreground.
+   3. **Create Room Separation**: Verified that `btn-create` strictly generates/populates the 4 digits and updates the QR code without auto-joining. The creator views the code on screen and clicks "Join Room" to initiate room entry.
+   4. **Automated Verification**: Verified with full test suites:
+      - [test_room_load_disconnect_resume.cjs](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_room_load_disconnect_resume.cjs): 20/20 checks passed (100%).
+      - [test_reconnect_resume_eta.cjs](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_reconnect_resume_eta.cjs): 33/33 checks passed (100%).
+      - [test_custom_room_and_disconnect_persistence.cjs](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_custom_room_and_disconnect_persistence.cjs): 9/9 checks passed (100%).
+      - [test_otp.cjs](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_otp.cjs): 38/38 checks passed (100%).
+       - `npm run build`: built cleanly in production with zero errors.
+
+---
+
+## 56. Cancel Transfer — Drop Zone Hidden After Cancel on Both Devices
+* **Symptom**: After pressing "Yes, Cancel" on the cancel-transfer confirmation, the drop-zone/drag-and-drop box did not reappear on either the sender or receiver device. The UI was stuck on the (invisible) progress overlay state.
+* **Root Cause**: `cancelTransfer()` in `src/App.tsx` calls `setIsTransferring(false)` (async React state update) and then immediately calls `(window as any).onTransferCancelled?.()` synchronously (before any re-render). `onTransferCancelled()` calls `transitionToSender()`, which reads `window.getTransferPhase()` — but that value is only updated via a `useEffect` that runs after the re-render. So `getTransferPhase()` still returns `'active'` at call time, making `isTxActiveNow = true`. This caused `transitionToSender()` to:
+  1. Skip clearing `#progress-screen.visible` (blocked by `!isTxActive` guard at line 3064 of `index.html`).
+  2. Skip the 320ms timer that re-adds `sender-screen.visible` (blocked by `!isTxActive && !isRxActive` guard at line 3080).
+  The same race existed on the peer device that received the `CANCEL_TRANSFER` data-channel message.
+* **Fix**: Added `(window as any).setTransferPhase?.('idle')` synchronously immediately before `onTransferCancelled()` in both:
+  - The initiator path in `cancelTransfer()` (before `onTransferCancelled`)
+  - The peer path in the `CANCEL_TRANSFER` data-channel handler
+  Also added `midTransferDisconnectRef.current = false` at both call sites to avoid leaving stale reconnect-guard state after an explicit cancel.
+* **Convention**: Any future `hasTransferIntent` expression in a socket/reconnect handler MUST include `midTransferDisconnectRef.current` to maintain silent reconnect behavior.
+* **Files modified**: [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx)
+
+---
+
+## 58. Cancel Transfer — Headless/Blank UI State and Reconnection State Resilience
+* **Symptom**:
+  1. Clicking "Cancel Transfer" on either device caused both devices to enter a headless/blank state where the drag-and-drop box and all action buttons disappeared entirely.
+  2. Temporary server disconnection was causing abrupt UI state disruptions instead of seamless silent reconnection.
+* **Root Cause**:
+  1. In `index.html`, `onTransferCancelled()` attempted to retrieve the room code via `badge.textContent.replace('Room ', '').trim()`. If the badge contained `'Receive'` or `'----'`, or if the text evaluated to `""`, the transition guard `if (roomCodeText && typeof window.transitionToSender === 'function')` skipped calling `transitionToSender`, leaving `#sender-screen` with `opacity: 0; pointer-events: none;` and progress overlays removed. Furthermore, `transitionToSender`'s 320ms transition timer could be cleared by the incoming `global-unlock` event from the server, stranding `#sender-screen` without `.visible`.
+  2. `isSource` and `isSourceRef` in `src/App.tsx` were not explicitly reset in `cancelTransfer` and the `CANCEL_TRANSFER` peer handler, leaving stale role states.
+* **Fix**:
+  1. **Guaranteed UI State Restoration on Cancel**: Updated `onTransferCancelled()` in [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html) to:
+     - Robustly sanitize badge text and fall back to `sessionStorage.getItem('nexus_active_room')` to guarantee a valid `safeRoomCode`.
+     - Always call `transitionToSender(safeRoomCode)` without blocking on `roomCodeText` truthiness.
+     - Immediately and synchronously enforce `#sender-screen.classList.add('visible')` and `#drop-zone.style.display = ''; opacity = '1'; pointerEvents = 'all'` so the drag-and-drop box and action controls are immediately usable on both devices without waiting on or depending on timer lifecycles.
+     - Synchronously remove `document.body.classList.remove('transferring')` and hide all progress overlays.
+  2. **Role & Intent Reset**: Added `setIsSource(false)` and `isSourceRef.current = false` in both `cancelTransfer()` and the peer `CANCEL_TRANSFER` message handler in [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx).
+* **Files modified**: [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`test_exit_paths.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_exit_paths.cjs), [`code_debugged.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/code_debugged.md)
+
+---
+
+## 59. Render Cloud Deployment, Cold-Start Countdown Wakeup Toast & Server Keep-Alive Strategy
+* **Symptom**: On free cloud tiers (e.g. Render.com), the server sleeps after 15 minutes of inactivity. When opening the web app, initial signaling connection took 30–50 seconds, displaying a disconnected state or jarring error spam ("Cannot reach signaling server") with no explanation to the user. Hardcoded port 3000 caused boot failures on cloud environments requiring dynamic `PORT` assignment.
+* **Root Cause**:
+  1. `PORT` was hardcoded to `3000` in `server.ts` without reading `process.env.PORT`.
+  2. Express and Socket.IO lacked CORS configuration and health check endpoints for split deployments (e.g. Cloudflare Pages frontend + Render backend).
+  3. No pre-warm HTTP ping or client-side cold-start detection mechanism existed.
+  4. Repetitive `connect_error` events on Socket.IO spammed error toasts during initial server spin-up.
+* **Fix**:
+  1. **Dynamic Port & CORS in `server.ts`**: Bound `Number(process.env.PORT) || 3000`, added Express CORS middleware supporting `ALLOWED_ORIGINS` / `CORS_ORIGIN`, and added lightweight `/healthz` endpoint (`200 OK`) and `/api/server-info` status reporting.
+  2. **Internal Keep-Alive Heartbeat in `server.ts`**: Added automated 12-minute heartbeat self-ping when `KEEP_ALIVE=true` or `RENDER_EXTERNAL_URL` is set, compliant with Render's 750 free monthly hour allowance.
+  3. **Immediate Client-Side HTTP Pre-Warm in `src/App.tsx`**: Fired a non-blocking `fetch(SERVER_URL + "/healthz")` immediately on initial React mount to trigger container boot before WebSockets negotiate.
+  4. **Smart Cold-Start Wakeup Toast in `index.html` & `src/App.tsx`**:
+     - 3.0s grace window: Fast local or warm connections (<3s) show zero toasts, keeping the UI completely clean.
+     - Slow connections (>3s): Displays informative live countdown toast (`⚡ Waking up signaling network (free tier spin-up)... ~40s remaining`) ticking down each second.
+     - On connect: Smoothly transitions into green confirmation toast (`🟢 Connected to Signaling Network! Ready to share.`) with 3.5s auto-dismiss.
+     - On timeout: Displays `Almost ready... Finalizing server handshake` with an interactive "Retry Now" action button.
+  5. **Error Suppression During Wakeup**: Gated `showSignalingError` so cold-start retries do not spam error toasts over the countdown UI.
+  6. **Production Scripts & Documentation**: Added `"start": "tsx server.ts"` in `package.json` and created comprehensive runbook [`docs/deployment_guide.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/docs/deployment_guide.md) detailing Render All-in-One, Cloudflare Pages + Render split deployment, and free UptimeRobot/cron-job.org keep-alive configurations.
+* **Files modified**: [`server.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/server.ts), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`src/global.d.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/global.d.ts), [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`package.json`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/package.json), [`docs/deployment_guide.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/docs/deployment_guide.md), [`docs/plans/2026-08-15-002-render-deployment-wakeup-toast-and-keepalive-plan.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/docs/plans/2026-08-15-002-render-deployment-wakeup-toast-and-keepalive-plan.md)
 
 
+---
+
+## 60. Seamless Server Reconnection — Prevention of Browser Reloads & Receiver Workspace Reset
+* **Symptom**: During server reconnection or network drops, the web page reloaded repeatedly or flipped from the active receiving progress screen to the sender drag-and-drop box, appearing to reset the page.
+* **Root Cause**:
+  1. **Transfer Phase Falling to Idle**: In `src/App.tsx`, `transferPhase` React state calculation evaluated `!isTransferring` as `'idle'` on disconnect, ignoring `midTransferDisconnectRef.current` and `preservedResumeManifestRef.current`. This caused `window.getTransferPhase()` in `index.html` to return `'idle'` while channels were reconnecting.
+  2. **Screen Identity Desynchronization**: `window.__nexusCurrentScreen` was not updated to `'receiver'` during drop action, incoming file meta, or receive progress display. When `socket.on("room-status")` received `waiting` or `ready`, `isCurrentlyReceiver` evaluated to `false`, causing the receiver to call `transitionToSender()`.
+  3. **Progress Screen Destruction in `transitionToSender`**: In `index.html`, `transitionToSender` evaluated `isTxActiveNow` and `isRxActiveNow` as `false` during reconnect because `getTransferPhase()` was `'idle'`. It removed `.visible` from `#receive-progress` and scheduled `#sender-screen.visible`, flipping the receiver device into the sender workspace.
+  4. **Vite Dev Server HMR Reconnect Loop**: In `server.ts`, Vite dev server `hmr: { server: httpServer }` was not conditional on `DISABLE_HMR`. When the server dropped, Vite's client WebSocket disconnected, polled for restart, and triggered `location.reload()` upon reconnection.
+  5. **Unconditional Server Disconnect Handling**: In `src/App.tsx`, `socket.on("disconnect")` did not manually call `socket.connect()` when `reason === "io server disconnect"`.
+* **Fix**:
+  1. **Preserved Active Phase on Disconnect**: Updated `transferPhase` in [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx) so `isMidTransfer = midTransferDisconnectRef.current || preservedResumeManifestRef.current !== null` maintains `'active'`, ensuring `window.getTransferPhase()` never reports `'idle'` during a reconnect pause.
+  2. **Strict Screen Identity Synchronization**: Set `window.__nexusCurrentScreen = 'receiver'` and `lastScreenRef.current = 'receiver'` in `handleDropAction()`, `triggerIncomingSphere()`, `showReceiverProgress()`, `setupDataChannel`, and `FILE_META` auto-resuming handler in [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx) and [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html).
+  3. **Receiver Workspace Protection**: In `transitionToSender()` in [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), added an explicit guard: if `window.__nexusCurrentScreen === 'receiver'`, immediately redirect to `transitionToReceiver(code)` and return, never flipping screen identity or tearing down the receive progress UI.
+  4. **HMR Configuration**: Updated `server.ts` to respect `process.env.DISABLE_HMR === 'true'` (disabling HMR auto-reload client when set).
+  5. **Socket Disconnect Reconnection**: Added auto-reconnect on `"io server disconnect"` in `src/App.tsx`.
+* **Automated Verification**:
+  - `test_room_load_disconnect_resume.cjs`: 20/20 checks passed (100%).
+  - `test_reconnect_resume_eta.cjs`: 33/33 checks passed (100%).
+  - `test_custom_room_and_disconnect_persistence.cjs`: 9/9 checks passed (100%).
+  - `test_exit_paths.cjs`: 21/21 checks passed (100%).
+* **Files modified**: [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`server.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/server.ts), [`test_exit_paths.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_exit_paths.cjs), [`code_debugged.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/code_debugged.md)
+
+---
+
+## 61. Receiving Device File Receiving Animation Overlap with Drag & Drop Box
+* **Symptom**: On the receiving device, when a file transfer begins or when receiving file chunks, the circular file receiving animation (`#receive-progress` and `#transfer-rings-canvas`) visually overlapped with the drag-and-drop box (`#drop-zone` inside `#sender-screen`). The drag-and-drop box rendered underneath/through the receiving progress screen.
+* **Root Cause**:
+  1. **Unhandled Screen Transition Timer Race (`window.__nexusScreenTransitionTimer`)**: When a user joined a room or connected to a peer, `transitionToSender()` scheduled a 320ms timer (`setTimeout(..., 320)`) to add `.visible` to `#sender-screen`. When incoming file metadata (`FILE_META`) or `global-lock` arrived on the receiver, `triggerIncomingSphere()`, `showReceiverProgress()`, and `startReceive()` executed without cancelling `window.__nexusScreenTransitionTimer`. At +320ms, the timer fired and executed `document.getElementById('sender-screen').classList.add('visible')`, resurrecting `#sender-screen` and `#drop-zone` directly beneath the transparent `#receive-progress` overlay.
+  2. **Timer Callback Lacked Active Receive State Verification**: The 320ms `transitionToSender()` timer callback unconditionally added `.visible` to `#sender-screen` without verifying whether a transfer was active or whether `#receive-progress.visible` / `#receiver-screen.visible` / `rxTransferActive` was true.
+  3. **CSS Opacity Transition Bleed & Display Latch**: `#sender-screen` only had `transition: opacity 0.35s ease;` without an immediate `display: none !important;` rule when not `.visible`. During the 350ms fade-out transition, `#sender-screen` and `#drop-zone` remained rendered on screen while `#receive-progress` was immediately visible.
+  4. **CSS Layout Isolation Missing for Receiver & Transferring States**: CSS rules only enforced `body.transferring #drop-zone { display: none !important; }` but lacked rules hiding `#sender-screen`, `#drop-zone`, and `#queue-wrap` when `body:has(#receive-progress.visible)`, `body:has(#receiver-screen.visible)`, or `body:has(#receive-success.visible)` was active.
+  5. **Missing Synchronous DOM Banishment in Receiver Entry Points**: `triggerIncomingSphere()`, `showReceiverProgress()`, and `transitionToReceiver()` removed `.visible` classes but did not synchronously clear pending transition timers or apply `style.display = 'none'` on `#sender-screen`, `#drop-zone`, and `#queue-wrap`.
+* **Fix**:
+  1. **Strict CSS Layout Isolation in `index.html`**:
+     - Added `#sender-screen:not(.visible) { display: none !important; opacity: 0 !important; pointer-events: none !important; }` to eliminate opacity transition bleed.
+     - Added compound selector rules ensuring `#sender-screen`, `#drop-zone`, and `#queue-wrap` are strictly `display: none !important; opacity: 0 !important; pointer-events: none !important;` whenever `body.transferring`, `body:has(#receive-progress.visible)`, `body:has(#receiver-screen.visible)`, or `body:has(#receive-success.visible)` is active.
+     - Added symmetric rules hiding receiver UI elements (`#receiver-screen`, `#receive-progress`, `#gravity-well-ui`) when sender `#progress-screen.visible` is active.
+  2. **Timer Cancellation & Runtime Receiver Guards in `transitionToSender`**:
+     - In `transitionToSender()`, added checks for `isRxActiveNow` (active receive or receive progress visible) to abort immediately and delegate to `transitionToReceiver()`.
+     - In `transitionToSender()`'s 320ms `setTimeout` callback, added runtime verification re-checking `getRxTransferActive()`, `receive-progress.visible`, `receive-success.visible`, and `body.transferring` before adding `.visible` to `#sender-screen`.
+  3. **Synchronous Timer Clearing & DOM Banishment in Receiver Entry Hooks**:
+     - Updated `triggerIncomingSphere()`, `showReceiverProgress()`, `showSenderProgress()`, and `transitionToReceiver()` to immediately clear `window.__nexusScreenTransitionTimer`.
+     - Updated `triggerIncomingSphere()` and `showReceiverProgress()` to synchronously set `style.display = 'none'` on `#sender-screen`, `#drop-zone`, and `#queue-wrap`.
+     - Synchronously updated `window.__nexusCurrentScreen = 'receiver'` on `socket.on("global-lock")` in `src/App.tsx`.
+  4. **Clean Idle State Recovery**:
+     - Ensured `onTransferCancelled()`, `sendAnotherFile()`, and `dismissSuccess()` cleanly clear inline styles and restore `#sender-screen` and `#drop-zone` visibility only when transitioning back to idle sender mode.
+* **Automated Verification**:
+  - `test_receiver_animation_overlap.cjs`: 9/9 checks passed (100%) across all 4 scenarios (transitionToSender race, mid-receive transitionToSender protection, showReceiverProgress direct invocation, and clean cancel/idle recovery).
+  - `test_exit_paths.cjs`: 21/21 checks passed (100%).
+  - `test_custom_room_and_disconnect_persistence.cjs`: 9/9 checks passed (100%).
+  - `test_room_load_disconnect_resume.cjs`: 25/25 checks passed (100%).
+  - `npm run lint`: 0 errors.
+* **Files modified**: [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`test_receiver_animation_overlap.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_receiver_animation_overlap.cjs), [`code_debugged.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/code_debugged.md)
+
+---
+
+## 62. Seamless Silent Reconnection, Zero-Reload State Preservation & ClientId Retention
+* **Symptom**:
+  1. When network disconnected temporarily or signaling server restarted, devices reloaded the page, lost active room parameters, or flipped the receiver workspace into the sender drag-and-drop workspace.
+  2. Rejoining sockets were occasionally rejected as a 3rd peer or had roles desynchronized because the server purged client mapping on disconnect.
+* **Root Cause**:
+  1. `server.ts` executed `room.peerClientIds.delete(socket.id)` immediately on socket disconnect, losing the client identity before the rejoining socket could connect with the same `clientId`.
+  2. `genuinelyDeadPeers` in `server.ts` ran before `clientId` lookup, purging the socket prior to socket replacement.
+  3. `transitionToSender()` in `index.html` lacked an immediate guard against `window.__nexusCurrentScreen === 'receiver'`, occasionally tearing down the receiver screen on `room-status: ready`/`waiting` events.
+* **Fix**:
+  1. **ClientId Retention across Grace Window**: Updated `server.ts` to retain `room.peerClientIds` across disconnects, and prioritized `clientId` matching & socket replacement in `join-room` before purging genuinely dead peers.
+  2. **Synchronous Receiver Screen Protection**: In `index.html` (`transitionToSender()`), ensured `window.__nexusCurrentScreen === 'receiver'` immediately delegates to `transitionToReceiver()`, preventing workspace flips on socket events.
+  3. **Guarded Cancellation Recovery**: Updated `onTransferCancelled()` in `index.html` to set `window.__nexusCurrentScreen = 'sender'` before calling `transitionToSender(safeRoomCode)` when room is unlocked.
+  4. **Automated Verification**:
+     - `test_room_load_disconnect_resume.cjs`: 25/25 checks passed (100%).
+     - `test_reconnect_resume_eta.cjs`: 33/33 checks passed (100%).
+     - `test_custom_room_and_disconnect_persistence.cjs`: 9/9 checks passed (100%).
+     - `test_receiver_animation_overlap.cjs`: 9/9 checks passed (100%).
+     - `test_exit_paths.cjs`: 21/21 checks passed (100%).
+     - `test_otp.cjs`: 38/38 checks passed (100%).
+     - `npm run lint`: 0 errors.
+     - `npm run build`: built cleanly with 0 errors.
+* **Files modified**: [`server.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/server.ts), [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`code_debugged.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/code_debugged.md)
+
+---
+
+## 63. Transfer Completion Lifecycle, Sender Blank Screen & Receiver Loop Trapping
+* **Symptom**:
+  1. On the sender device, after a transfer completed and the 6-second success modal was dismissed (or "Send Another File" clicked), the screen became completely blank without restoring the interactive drag-and-drop workspace (`#drop-zone`).
+  2. On the receiver device, after file assembly completed and the success modal dismissed on an unlocked room, the receiver was re-locked into the receiving loop screen (`#receiver-screen` with `#gravity-well-ui` radar animation) instead of cleanly returning to the sender drop-zone workspace.
+* **Root Cause**:
+  1. `resetSenderUI()` and `sendAnotherFile()` in `index.html` removed `#success-screen.visible` but never explicitly cleared inline `style.display = 'none'` or re-added `.visible` to `#sender-screen`, causing CSS rule `#sender-screen:not(.visible) { display: none !important; }` to keep `#sender-screen` hidden.
+  2. `dismissSuccess()` in `index.html` called `transitionToSender(roomCodeText)`, but `transitionToSender()` contained an unconditional check `if (window.__nexusCurrentScreen === 'receiver')` which delegated back to `transitionToReceiver()`, trapping the receiver in the receiver screen loop.
+* **Fix**:
+  1. **Sender UI Restoration**: Updated `sendAnotherFile()` and `resetSenderUI()` in [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html) to set `window.__nexusCurrentScreen = 'sender'`, enforce `#sender-screen.classList.add('visible')` with `style.display = ''`, and restore `#drop-zone.style.display = ''`, `opacity = '1'`, and `pointerEvents = 'all'`.
+  2. **Receiver Workspace Release**: In [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html) (`dismissSuccess()`), when the room is unlocked (`!isLocked`), reset `window.__nexusCurrentScreen = 'sender'`, hide `#gravity-well-ui`, and transition cleanly to `transitionToSender(roomCodeText)`.
+  3. **Transition Receiver Guard Refinement**: Refined `isRxActiveNow` in `transitionToSender()` so it only intercepts when an active receive transfer is in flight or room is locked.
+* **Files modified**: [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`test_completion_screen_restoration.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_completion_screen_restoration.cjs)
+
+---
+
+## 64. Small-File 1333% Progress Overshoot & Decoupled Vite HMR Auto-Reload
+* **Symptom**:
+  1. Transferring small files (e.g. 9.8 KB) initially displayed `1333%` progress on both sender and receiver progress rings/percentages.
+  2. During network interface switches or dev reconnection, Vite's client WebSocket disconnected and triggered `window.location.reload()`, interrupting the session.
+* **Root Cause**:
+  1. In `src/lib/TransferEngine.ts`, `this.bytesTransferred = Math.max(this.bytesTransferred, this.ackedChunks.size * CHUNK_SIZE)` assumed all chunks were full 128 KB chunks. On a 9.8 KB file with 1 chunk, `1 * 131072 = 131072` bytes, leading to `(131072 / 9830) * 100 = 1333.38%`.
+  2. In `server.ts`, Vite dev server attached `{ server: httpServer }` to HMR unconditionally unless `DISABLE_HMR=true` was provided.
+* **Fix**:
+  1. **Exact Chunk Byte Calculation & Clamping**: Updated `resumeTransfer`, `handleAck`, and `handleIncomingChunk` in [`src/lib/TransferEngine.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/lib/TransferEngine.ts) to calculate partial byte sizes for the last chunk and clamp `bytesTransferred` to `totalSize`. Clamped telemetry `progress` to `[0, 100]`.
+  2. **UI Clamping Safeguard**: Clamped `safeRatio = Math.min(1, Math.max(0, transferProgress / 100))` in [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx) and clamped progress in `updateSenderProgress` / `updateReceiverProgress` in [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html).
+  3. **Vite HMR Decoupled**: Updated `server.ts` so `hmr: process.env.ENABLE_HMR === 'true' ? { server: httpServer } : false`, preventing dev server HMR client disconnects from reloading the browser.
+* **Files modified**: [`src/lib/TransferEngine.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/lib/TransferEngine.ts), [`src/App.tsx`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/src/App.tsx), [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`server.ts`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/server.ts), [`test_small_file_progress.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_small_file_progress.cjs), [`test_silent_reconnect_no_reload.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_silent_reconnect_no_reload.cjs)
+
+---
+
+## 65. ETA Progress Ring Vertical Centering & Post-Transfer File Queue UI Display
+* **Symptom**:
+  1. During active file transfer on sender (`#progress-screen`) and receiver (`#receive-progress`), the progress ring with ETA/speed readout was rendered noticeably below the vertical center of the viewport, creating a 14px–34px visual offset against the 3D particle sphere / canvas animation centered at `CY = innerHeight / 2`.
+  2. After a file transfer completed and the success modal was dismissed (or "Send Another File" clicked), selecting new files added them to the queue and enabled the Send button, but the selected files queue card (`#queue-wrap`) below `#drop-zone` remained invisible.
+* **Root Cause**:
+  1. `#progress-screen` and `#receive-progress` had asymmetrical padding (`padding: calc(64px + env(safe-area-inset-top, 0px)) 24px 36px`), and `.progress-top-region` / `.progress-bottom-region` had different intrinsic padding heights ($84\text{px}$ top vs $56\text{px}$ bottom), shifting `.progress-ring-wrap` downward by $\Delta Y = (84-56)/2 = +14\text{px}$ (and more on mobile).
+  2. Screen transition hooks (`transitionToReceiver`, `triggerIncomingSphere`, `showReceiverProgress`) applied inline `style.display = 'none'` to `#queue-wrap`. When returning to the sender screen, `renderQueue()`, `resetSenderUI()`, and `sendAnotherFile()` added `.visible` (`display: block`) but did not clear the inline `style.display = 'none'`, leaving `#queue-wrap` hidden.
+* **Fix**:
+  1. **Symmetric Vertical Centering**:
+     - Updated `#progress-screen` and `#receive-progress` to `padding: 0 24px;` (and `0 16px` on mobile).
+     - Set `.progress-top-region, .progress-bottom-region { flex: 1 1 0; min-height: 0; box-sizing: border-box; }`.
+     - Gave `.progress-top-region` symmetric `padding: 0 0 20px 0;` and `.progress-bottom-region` `padding: 20px 0 0 0; gap: 16px;`.
+     - Verified exact mathematical centering where bounding rect center $Y = \text{innerHeight} / 2$ ($\pm 0.00\text{px}$ delta across Desktop, Mobile, and Tablet viewports).
+  2. **Queue Wrap Display Cleansing**:
+     - Updated `renderQueue()` to explicitly clear `wrap.style.display = ''` alongside adding `.visible` when `fileQueue.length > 0`, and cleared `list.innerHTML = ''` when `fileQueue.length === 0`.
+     - Updated `resetSenderUI()`, `sendAnotherFile()`, `transitionToSender()`, and `onTransferCancelled()` to clear `qw.style.display = ''`.
+  3. **Automated Verification**:
+     - `test_eta_and_queue_fix.cjs`: 5/5 test scenarios passed (100%) covering desktop/mobile/tablet progress ring centering, fresh sender file selection, post-transfer `sendAnotherFile` file selection, role-transition file selection, and queue item removal.
+     - `npm run lint`: 0 errors (`tsc --noEmit`).
+* **Files modified**: [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`code_debugged.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/code_debugged.md), [`test_eta_and_queue_fix.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_eta_and_queue_fix.cjs)
+
+---
+
+## 66. Progress Metadata Box Proportion, HUD Symmetry & Cancel Transfer Button Cross-Device Sizing
+* **Symptom**:
+  1. During file transfer, the metadata box displaying the filename and speed/ETA (`.progress-meta`) appeared too small, narrow, and squished, breaking visual symmetry and aesthetic balance against the 180px circular progress ring and surrounding UI.
+  2. The "Cancel Transfer" button (`#btn-cancel` / `#btn-rx-cancel`) and its confirmation dialog buttons ("Yes, Cancel" / "No, Continue") were rendered too small on mobile phones or clipped off-screen on short desktop viewports.
+* **Root Cause**:
+  1. `.progress-meta` had no `min-width` or bounded width rules, causing it to shrink-wrap around short file names with only `12px 20px` padding, creating a disproportionately small card under the 180px progress ring.
+  2. Over-compacted button padding (`7px 20px` and `6px 18px`) and small font sizes (`11.5px` / `10.5px`) made cancel buttons appear tiny, asymmetrical, and difficult to tap on mobile touchscreens compared to standard desktop buttons.
+* **Fix**:
+  1. **Enhanced Metadata Box Geometry & Typography**:
+     - Configured `.progress-meta` with `width: 100%; min-width: 270px; max-width: 340px;` with compact `padding: 10px 20px; border-radius: 16px;` and refined glassmorphic styling (`backdrop-filter: blur(20px) saturate(160%)`, `box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08)`).
+     - Scaled `.progress-filename` to `font-size: 12.5px; font-weight: 500;` and `.progress-stats` to `font-size: 11px; font-weight: 500;` for crisp, harmonious readability.
+  2. **Symmetric Cross-Device Button Sizing & Clearance**:
+     - Standardized `.btn-cancel` to `padding: 9px 24px; font-size: 12.5px; min-width: 140px; border-radius: 12px; font-weight: 600;` matching PC symmetry across both mobile phones and desktop.
+     - Scaled `.btn-confirm-yes, .btn-confirm-no` to `padding: 8px 22px; font-size: 12px; font-weight: 600; border-radius: 10px;` and `.cancel-confirm-text` to `font-size: 11.5px; line-height: 1.45; max-width: 300px;`.
+     - Elevated `#cancel-area` and `#rx-cancel-area` with `position: relative; z-index: 28;`.
+     - Added `@media (max-height: 560px)` rule scaling the ring wrap (`0.82`) and compact padding for ultra-short viewports while keeping full-sized symmetric buttons on standard mobile and PC viewports.
+  3. **Verification**:
+     - Ran [`test_progress_box_and_cancel_clearance.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_progress_box_and_cancel_clearance.cjs) verifying 7/7 CSS clearance and symmetry checks pass.
+     - Ran TypeScript type check (`npm run lint`) to confirm 0 compilation/type errors.
+* **Files modified**: [`index.html`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/index.html), [`code_debugged.md`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/code_debugged.md), [`test_progress_box_and_cancel_clearance.cjs`](file:///D:/Projects/Nexus%20Spatial%20Share/Website%20Code/nexus-spatial-share/test_progress_box_and_cancel_clearance.cjs)
 
