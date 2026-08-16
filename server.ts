@@ -216,13 +216,26 @@ async function startServer() {
 
   // ── CORS Configuration for Split Cloud Deployments (e.g. Cloudflare Pages + Render) ──
   const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || "*";
-  const allowedOrigins = allowedOriginsEnv === "*" ? "*" : allowedOriginsEnv.split(',').map(s => s.trim());
+  const allowedOriginsList = allowedOriginsEnv === "*" ? ["*"] : allowedOriginsEnv.split(',').map(s => s.trim()).filter(Boolean);
+
+  function isOriginAllowed(origin: string | undefined): boolean {
+    if (allowedOriginsEnv === "*" || allowedOriginsList.includes("*")) return true;
+    if (!origin) return true; // Allow non-browser / internal requests (curl, server-to-server)
+    return allowedOriginsList.some(pattern => {
+      if (pattern === origin) return true;
+      if (pattern.includes("*")) {
+        const regexStr = "^" + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + "$";
+        return new RegExp(regexStr).test(origin);
+      }
+      return false;
+    });
+  }
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (allowedOrigins === "*") {
+    if (allowedOriginsEnv === "*" || allowedOriginsList.includes("*")) {
       res.setHeader("Access-Control-Allow-Origin", "*");
-    } else if (origin && (allowedOrigins.includes(origin) || allowedOrigins.includes("*"))) {
+    } else if (origin && isOriginAllowed(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -233,10 +246,15 @@ async function startServer() {
     next();
   });
 
-  const ioCorsOrigin = allowedOrigins === "*" ? "*" : allowedOrigins;
   const io = new Server(httpServer, {
     cors: {
-      origin: ioCorsOrigin,
+      origin: (origin, callback) => {
+        if (isOriginAllowed(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error("CORS origin not allowed"));
+        }
+      },
       methods: ["GET", "POST"]
     },
     pingTimeout: 120000, // 2 minutes before considering socket dead

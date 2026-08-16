@@ -449,7 +449,7 @@ export default function App() {
   }, [isTransferring]);
 
   useEffect(() => {
-    const customServerUrl = (import.meta as any).env?.VITE_SERVER_URL;
+    const customServerUrl = ((import.meta as any).env?.VITE_SERVER_URL || '').trim().replace(/\/+$/, '');
     const isDevPort = !!window.location.port && window.location.port !== '3000' && window.location.port !== '80' && window.location.port !== '443';
     const SERVER_URL = customServerUrl || (isDevPort
       ? `${window.location.protocol}//${window.location.hostname}:3000`

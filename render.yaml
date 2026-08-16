@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: nebulo-share-backend
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: KEEP_ALIVE
+        value: "true"
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: LOCK_GRACE_MS
+        value: "45000"
