@@ -670,7 +670,7 @@
     #progress-screen {
       position: fixed; inset: 0; z-index: 25;
       display: flex; flex-direction: column; align-items: center; justify-content: space-between;
-      padding: calc(64px + env(safe-area-inset-top, 0px)) 24px 36px;
+      padding: 0 24px;
       opacity: 0; pointer-events: none; transition: opacity 0.3s;
       background: transparent;
       backdrop-filter: none;
@@ -681,10 +681,17 @@
     #progress-screen.visible > * { pointer-events: auto; }
 
     .progress-top-region, .progress-bottom-region {
-      flex: 1; display: flex; flex-direction: column; align-items: center; width: 100%;
+      flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; align-items: center; width: 100%; box-sizing: border-box;
     }
-    .progress-top-region { justify-content: flex-end; padding-bottom: 20px; }
-    .progress-bottom-region { justify-content: flex-start; padding-top: 20px; gap: 16px; }
+    .progress-top-region {
+      justify-content: flex-end;
+      padding: calc(48px + env(safe-area-inset-top, 0px)) 0 10px 0;
+    }
+    .progress-bottom-region {
+      justify-content: flex-start;
+      padding: 10px 0 calc(40px + env(safe-area-inset-bottom, 0px)) 0;
+      gap: 10px;
+    }
 
     .progress-file-label {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -716,62 +723,107 @@
       color: var(--text-dim);
     }
     .progress-meta {
-      text-align: center; display: flex; flex-direction: column; gap: 6px;
-      background: rgba(10, 10, 15, 0.75);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      width: 100%;
+      min-width: 270px;
+      max-width: 340px;
+      box-sizing: border-box;
+      background: rgba(10, 10, 15, 0.78);
+      backdrop-filter: blur(20px) saturate(160%);
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 16px;
-      padding: 12px 20px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      padding: 10px 20px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      transition: all 0.25s ease;
     }
     .progress-filename {
-      font-family: 'JetBrains Mono', monospace; font-size: 12px;
-      color: var(--text); letter-spacing: 0.3px;
-      max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--text);
+      letter-spacing: 0.3px;
+      width: 100%;
+      max-width: 290px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: center;
     }
     .progress-stats {
-      font-family: 'JetBrains Mono', monospace; font-size: 11px;
-      color: var(--primary); letter-spacing: 0.5px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--primary);
+      letter-spacing: 0.5px;
+      text-align: center;
     }
 
     /* cancel button */
+    #cancel-area, #rx-cancel-area {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+      z-index: 28;
+    }
     .btn-cancel {
-      background: rgba(10, 10, 15, 0.75); border: none; border-radius: 12px; padding: 10px 24px;
+      background: rgba(10, 10, 15, 0.75); border: none; border-radius: 12px; padding: 9px 24px;
       color: var(--text-muted); cursor: pointer; font-family: 'Space Grotesk', sans-serif;
-      font-size: 12px; font-weight: 500; letter-spacing: 0.3px;
+      font-size: 12.5px; font-weight: 600; letter-spacing: 0.3px;
+      min-width: 140px; text-align: center;
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1), 0 4px 16px rgba(0,0,0,0.3);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12), 0 4px 16px rgba(0,0,0,0.3);
       transition: color 0.2s, box-shadow 0.2s, background 0.2s;
     }
     .btn-cancel:hover { color: var(--danger); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.4); background: rgba(239,68,68,0.06); }
 
     /* cancel confirm */
     #cancel-confirm, #rx-cancel-confirm {
-      display: none; text-align: center; gap: 12px;
+      display: none; text-align: center; gap: 10px;
       flex-direction: column; align-items: center;
     }
     #cancel-confirm.visible, #rx-cancel-confirm.visible { display: flex; }
     .cancel-confirm-text {
-      font-family: 'JetBrains Mono', monospace; font-size: 11px;
-      color: rgba(248,113,113,0.8); letter-spacing: 0.3px; max-width: 260px; line-height: 1.6;
+      font-family: 'JetBrains Mono', monospace; font-size: 11.5px; font-weight: 500;
+      color: rgba(248,113,113,0.95); letter-spacing: 0.3px; max-width: 300px; line-height: 1.45;
     }
-    .cancel-confirm-btns { display: flex; gap: 10px; }
+    .cancel-confirm-btns { display: flex; gap: 10px; justify-content: center; }
     .btn-confirm-yes {
-      background: rgba(239,68,68,0.12); border: none; border-radius: 10px; padding: 8px 20px;
+      background: rgba(239,68,68,0.14); border: none; border-radius: 10px; padding: 8px 22px;
       color: var(--danger); cursor: pointer; font-family: 'Space Grotesk', sans-serif;
-      font-size: 12px; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(239,68,68,0.25);
+      font-size: 12px; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(239,68,68,0.3);
       transition: background 0.2s;
     }
-    .btn-confirm-yes:hover { background: rgba(239,68,68,0.2); }
+    .btn-confirm-yes:hover { background: rgba(239,68,68,0.22); }
     .btn-confirm-no {
-      background: rgba(255,255,255,0.04); border: none; border-radius: 10px; padding: 8px 20px;
-      color: var(--text-muted); cursor: pointer; font-family: 'Space Grotesk', sans-serif;
-      font-size: 12px; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.06); border: none; border-radius: 10px; padding: 8px 22px;
+      color: var(--text); cursor: pointer; font-family: 'Space Grotesk', sans-serif;
+      font-size: 12px; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
       transition: background 0.2s;
     }
-    .btn-confirm-no:hover { background: rgba(255,255,255,0.08); }
+    .btn-confirm-no:hover { background: rgba(255,255,255,0.1); }
+
+    @media (max-height: 560px) {
+      .progress-ring-wrap {
+        transform: scale(0.82);
+        margin: -12px 0;
+      }
+      .progress-bottom-region {
+        padding-top: 4px;
+        gap: 6px;
+      }
+      .progress-meta {
+        padding: 8px 16px;
+        gap: 2px;
+      }
+    }
 
     /* ── SUCCESS STATE ── */
     #success-screen {
@@ -892,7 +944,7 @@
     #receive-progress {
       position: fixed; inset: 0; z-index: 25;
       display: flex; flex-direction: column; align-items: center; justify-content: space-between;
-      padding: calc(64px + env(safe-area-inset-top, 0px)) 24px 36px;
+      padding: 0 24px;
       opacity: 0; pointer-events: none; transition: opacity 0.35s;
       background: transparent;
     }
@@ -1070,11 +1122,31 @@
         padding-left: 12px;
         padding-right: 12px;
       }
-      #sender-screen, #receiver-screen, #progress-screen, #receive-progress, #success-screen, #receive-success {
+      #sender-screen, #receiver-screen, #success-screen, #receive-success {
         padding-top: calc(64px + env(safe-area-inset-top, 0px)) !important;
         padding-left: 16px !important;
         padding-right: 16px !important;
         padding-bottom: 36px !important;
+      }
+      #progress-screen, #receive-progress {
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        padding-left: 16px !important;
+        padding-right: 16px !important;
+      }
+      .progress-meta {
+        min-width: 270px;
+        max-width: 340px;
+        padding: 10px 20px;
+        gap: 4px;
+      }
+      .progress-bottom-region {
+        padding-top: 10px;
+        padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
+        gap: 10px;
+      }
+      .progress-top-region {
+        padding-bottom: 10px;
       }
       .card-inner {
         padding: 20px 16px 16px;
@@ -3169,6 +3241,10 @@
             dz.style.opacity = '1';
             dz.style.pointerEvents = 'all';
           }
+          const qw = document.getElementById('queue-wrap');
+          if (qw) {
+            qw.style.display = '';
+          }
         }
       }, 320);
     }
@@ -3207,8 +3283,17 @@
   }
   function renderQueue() {
     const list=document.getElementById('queue-list'),wrap=document.getElementById('queue-wrap'),dz=document.getElementById('drop-zone');
-    if(fileQueue.length===0){wrap.classList.remove('visible');dz.style.display='';return;}
-    dz.style.padding='24px 32px'; wrap.classList.add('visible');
+    if (!wrap || !list || !dz) return;
+    if(fileQueue.length===0){
+      wrap.style.display='';
+      wrap.classList.remove('visible');
+      list.innerHTML='';
+      dz.style.display='';
+      return;
+    }
+    dz.style.padding='24px 32px';
+    wrap.style.display='';
+    wrap.classList.add('visible');
     list.innerHTML='';
     fileQueue.forEach((f,idx)=>{
       const item=document.createElement('div'); item.className='queue-item';
@@ -3448,6 +3533,8 @@
         }
         const ss = document.getElementById('sender-screen');
         if (ss) { ss.style.display = ''; ss.classList.add('visible'); }
+        const qw = document.getElementById('queue-wrap');
+        if (qw) { qw.style.display = ''; }
       }
     } else {
       window.__nexusCurrentScreen = 'sender';
@@ -3456,6 +3543,8 @@
       }
       const ss = document.getElementById('sender-screen');
       if (ss) { ss.style.display = ''; ss.classList.add('visible'); }
+      const qw = document.getElementById('queue-wrap');
+      if (qw) { qw.style.display = ''; }
     }
 
     const dz = document.getElementById('drop-zone');
@@ -3480,6 +3569,11 @@
       dz.style.display = '';
       dz.style.opacity = '1';
       dz.style.pointerEvents = 'all';
+    }
+    const qw = document.getElementById('queue-wrap');
+    if (qw) {
+      qw.classList.remove('visible');
+      qw.style.display = '';
     }
     fileQueue=[]; resetSenderUI();
     if (typeof window.onFilesSelected === 'function') window.onFilesSelected([]);
@@ -3539,7 +3633,10 @@
       ss.classList.add('visible');
     }
     const qw=document.getElementById('queue-wrap');
-    if (qw) qw.classList.remove('visible');
+    if (qw) {
+      qw.classList.remove('visible');
+      qw.style.display = '';
+    }
     document.getElementById('control-panel')?.classList.remove('visible');
     const grab=document.getElementById('btn-grab');
     if (grab) grab.style.display='';
