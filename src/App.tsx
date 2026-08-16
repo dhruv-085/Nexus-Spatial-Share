@@ -295,7 +295,7 @@ export default function App() {
         console.log("[BackgroundMode] Silent audio playing, connection will stay alive in background.");
         if ('mediaSession' in navigator) {
           (navigator as any).mediaSession.metadata = new MediaMetadata({
-            title: 'Nexus Spatial Share',
+            title: 'Nebulo Share',
             artist: 'Background Connection Active',
           });
         }
@@ -398,7 +398,7 @@ export default function App() {
 
         const hasActiveTransferIntent = isTransferringRef.current || (isGlobalLockedRef.current && (transferRequestedRef.current || preservedResumeManifestRef.current !== null || (isSourceRef.current && !!transferIdRef.current)));
         if (hasActiveTransferIntent) {
-          (window as any).Toast?.show?.('Resuming file transfer from pause point...', 'info');
+          (window as any).Toast?.show?.('Resuming transfer from pause point...', 'info');
           if (isSourceRef.current) {
             const currentFile = selectedFilesRef.current[currentFileIndexRef.current];
             if (currentFile) {
@@ -443,7 +443,7 @@ export default function App() {
     if (isTransferring) {
       const isMobile = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && window.innerWidth < 768;
       if (isMobile) {
-        (window as any).Toast?.show?.('Keep app in foreground during transfer for best results.', 'info');
+        (window as any).Toast?.show?.('Keep Nebulo Share in the foreground during active transfers for maximum transfer speed.', 'info');
       }
     }
   }, [isTransferring]);
@@ -2143,7 +2143,7 @@ export default function App() {
           console.log("[BackgroundMode] Silent audio playing, connection will stay alive in background.");
           if ('mediaSession' in navigator) {
             navigator.mediaSession.metadata = new MediaMetadata({
-              title: 'Nexus Spatial Share',
+              title: 'Nebulo Share',
               artist: 'Background Connection Active',
             });
           }

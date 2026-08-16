@@ -30,7 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     this.setState({ errorInfo });
-    console.error('[Nexus ErrorBoundary] Uncaught exception in React component tree:', error, errorInfo);
+    console.error('[Nebulo ErrorBoundary] Uncaught exception in React component tree:', error, errorInfo);
   }
 
   handleReload = () => {
@@ -58,7 +58,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   handleCopyDiagnostics = () => {
     const { error, errorInfo } = this.state;
-    const diag = `NEXUS RUNTIME EXCEPTION DIAGNOSTICS
+    const diag = `NEBULO RUNTIME EXCEPTION DIAGNOSTICS
 Time: ${new Date().toISOString()}
 UserAgent: ${navigator.userAgent}
 URL: ${window.location.href}
@@ -189,7 +189,7 @@ ${errorInfo?.componentStack || 'No component stack available'}`;
                 marginBottom: '10px',
               }}
             >
-              Nexus Core Interrupted
+              Nebulo Core Interrupted
             </h1>
 
             <p
@@ -200,7 +200,7 @@ ${errorInfo?.componentStack || 'No component stack available'}`;
                 marginBottom: '28px',
               }}
             >
-              A runtime exception occurred in the spatial interface. Your session state can be safely restored.
+              An unexpected runtime exception occurred while managing your peer session.
             </p>
 
             {/* Action buttons */}
@@ -352,7 +352,7 @@ ${errorInfo?.componentStack || 'No component stack available'}`;
                 textTransform: 'uppercase',
               }}
             >
-              Nexus Spatial Share Fault Isolation Layer
+              Nebulo Share Fault Isolation Layer
             </div>
           </div>
         </div>

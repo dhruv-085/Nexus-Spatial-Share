@@ -1,5 +1,5 @@
 {
-  "name": "Nexus Spatial Share",
-  "description": "High-speed, gesture-based cross-platform file and clipboard transfer system.",
+  "name": "Nebulo Share",
+  "description": "Private, direct peer-to-peer file transfer system beyond the cloud.",
   "requestFramePermissions": ["camera", "microphone"]
 }

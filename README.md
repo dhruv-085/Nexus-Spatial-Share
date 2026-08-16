@@ -1,14 +1,14 @@
-# Nexus Spatial Share
+# Nebulo Share
 
-Nexus Spatial Share is an advanced, high-speed, peer-to-peer file sharing web application that uses direct WebRTC connection pipelines to coordinate and initiate transfers between devices. Users can interactively "grab" files to queue them for sending and "drop" them to trigger direct downloads on connected devices.
+Nebulo Share is a private, high-speed, peer-to-peer file sharing web application that pairs devices in seconds to beam files directly over an encrypted WebRTC connection beyond the cloud. Transfer files without third-party servers, storage limits, or tracking.
 
 ---
 
 ## ✨ Key Features
 
-1. **Interactive Spatial Interface**:
-   - **Grab (Send)**: Clicking Grab initiates a room locking sequence and prepares files to be sent.
-   - **Drop (Receive)**: Clicking Drop registers a drop intent on the receiving device to start writing incoming byte buffers.
+1. **Direct Peer-to-Peer Beaming**:
+   - **Send**: Select files and beam them directly to your peer.
+   - **Receive**: Stand by and save incoming files directly to local storage.
 
 2. **Custom High-Speed Transfer Engine**:
    - **Striped Multi-Channel WebRTC**: Splits transmission over 3 concurrent, high-throughput binary data channels plus a dedicated control channel for ACKs/NACKs and metadata.
