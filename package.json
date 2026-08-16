@@ -9,6 +9,7 @@
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name=nebulo-share --branch=main",
     "lint": "tsc --noEmit"
   },
   "engines": {
@@ -47,6 +48,7 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0",
-    "vite-plugin-node-polyfills": "^0.25.0"
+    "vite-plugin-node-polyfills": "^0.25.0",
+    "wrangler": "^4.123.0"
   }
 }
