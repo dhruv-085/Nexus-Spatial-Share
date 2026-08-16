@@ -1834,7 +1834,7 @@
         </div>
         <div class="role-btn-text">
           <div class="role-btn-title">I'm sending files</div>
-          <div class="role-btn-desc">Select files and throw them to the receiver</div>
+          <div class="role-btn-desc">Select files and beam them directly to your peer</div>
         </div>
         <span class="role-btn-arrow">›</span>
       </button>
@@ -1849,16 +1849,11 @@
         </div>
         <div class="role-btn-text">
           <div class="role-btn-title">I'm receiving files</div>
-          <div class="role-btn-desc">Wait for the sender to throw files your way</div>
+          <div class="role-btn-desc">Stand by to receive incoming files directly from your peer</div>
         </div>
         <span class="role-btn-arrow">›</span>
       </button>
 
-    </div>
-
-    <div class="role-note">
-      <em>◈</em> &nbsp;In a real session, your role is assigned automatically by the server.<br>
-      This picker is temporary until signaling is wired in Chapter 6.
     </div>
 
   </div>
@@ -1875,10 +1870,10 @@
       </svg>
     </div>
     <div style="position:relative; height:24px; display:flex; align-items:center; justify-content:center;">
-      <div class="drop-main-text">Drop files here or click to select</div>
-      <div class="drop-release-text">Release to add</div>
+      <div class="drop-main-text">Drop files here or click to browse</div>
+      <div class="drop-release-text">Release to add files</div>
     </div>
-    <div class="drop-sub-text">Any file type · Multiple files supported</div>
+    <div class="drop-sub-text">All file types supported · No file size limits</div>
     <input type="file" id="file-input" multiple />
   </div>
 
@@ -2054,7 +2049,7 @@
       <div class="gw-ring"></div>
       <div class="gw-core"><div class="gw-void"></div></div>
     </div>
-    <div class="gravity-well-label">Waiting for transfer...</div>
+    <div class="gravity-well-label">Waiting for incoming files...</div>
   </div>
 </div>
 
@@ -2136,7 +2131,7 @@
   <div class="panel-body" id="panel-body">
     <div class="panel-empty" id="panel-empty">
       <div class="panel-empty-icon">📭</div>
-      <div class="panel-empty-text">No files received yet</div>
+      <div class="panel-empty-text">No files received yet. Transferred files will appear here.</div>
     </div>
   </div>
 </div>
